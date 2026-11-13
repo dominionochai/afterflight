@@ -5,7 +5,7 @@
  *   Promise<{ ok: boolean, status: number, json: () => Promise<any>, text: () => Promise<string> }>} RequestJira
  */
 
-async function getJson(requestJira, path) {
+export async function getJson(requestJira, path) {
   const res = await requestJira(path);
   if (!res.ok) {
     throw new Error(`GET ${path} failed with HTTP ${res.status}: ${await res.text()}. Check the app's scopes and the admin's permissions.`);
@@ -85,7 +85,7 @@ export function filterIo(requestJira) {
         body: JSON.stringify({ name, jql }),
       });
       if (!res.ok) {
-        throw new Error(`PUT /rest/api/3/filter/${id} failed with HTTP ${res.status}: ${await res.text()}. The signed-in admin may not be allowed to edit this filter.`);
+        throw new Error(`PUT /rest/api/3/filter/${id} failed with HTTP ${res.status}: ${await res.text()}. Jira only lets a filter's owner update it, so sign in as the owner or ask them to apply this repair.`);
       }
     },
   };

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import ForgeReconciler, { Button, Checkbox, DynamicTable, Heading, SectionMessage, Stack, Text, Textarea } from '@forge/react';
+import ForgeReconciler, { Button, Checkbox, DynamicTable, Heading, SectionMessage, Stack, Text, TextArea } from '@forge/react';
 import { invoke } from '@forge/bridge';
 
 const HEAD = { cells: ['Apply', 'Filter', 'Original', 'Proposed', 'Left for you'].map((content) => ({ key: content, content })) };
@@ -43,7 +43,8 @@ const App = () => {
   return (
     <Stack space="space.200">
       <Heading as="h2">Afterflight</Heading>
-      <Textarea label="Data Center snapshot (JSON)" onChange={(e) => setSnapshotText(e.target.value)} />
+      <Text weight="bold">Data Center snapshot (JSON)</Text>
+      <TextArea value={snapshotText} isMonospaced minimumRows={8} onChange={(e) => setSnapshotText(e.target.value)} />
       <Button appearance="primary" onClick={analyse}>Analyse</Button>
       {error && <SectionMessage appearance="error" title="Failed"><Text>{error}</Text></SectionMessage>}
       {analysis?.notMigrated.length > 0 && (
@@ -54,8 +55,8 @@ const App = () => {
       {rows && <DynamicTable head={HEAD} rows={rows} />}
       {rows && <Button appearance="primary" isDisabled={picked.length === 0} onClick={apply}>Apply selected</Button>}
       {outcome && (
-        <SectionMessage appearance={outcome.stillStale.length ? 'warning' : 'confirmation'} title="Applied">
-          <Text>{`Repaired ${outcome.done.length}, already done ${outcome.skipped.length}, ignored ${outcome.ignored.length}. Still stale: ${outcome.stillStale.join(', ') || 'none'}.`}</Text>
+        <SectionMessage appearance={outcome.stillStale.length || outcome.failed.length ? 'warning' : 'success'} title="Applied">
+          <Text>{`Repaired ${outcome.done.length}, already done ${outcome.skipped.length}, ignored ${outcome.ignored.length}. Still stale: ${outcome.stillStale.join(', ') || 'none'}. Failed: ${outcome.failed.map((f) => `${f.name} (${f.message})`).join('; ') || 'none'}.`}</Text>
         </SectionMessage>
       )}
     </Stack>

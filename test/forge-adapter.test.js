@@ -4,42 +4,11 @@ import { source, cloud } from '../fixtures/synthetic.js';
 import { readCloudWorld } from '../src/cloud-reader.js';
 import { parseSnapshot } from '../src/snapshot.js';
 import { runAnalysis, runApply } from '../src/service.js';
+import { fakeJira } from '../fixtures/fake-jira.js';
+import { makeAuditLog } from '../src/audit.js';
+import { memoryStore, tickingClock } from '../fixtures/memory-audit-store.js';
 
-function fakeJira(world, { pageSize = 2, status = 200 } = {}) {
-  const filters = new Map(world.filters.map((f) => [f.id, { ...f }]));
-  const writes = [];
-  const body = (obj) => ({ ok: status < 400, status, json: async () => obj, text: async () => JSON.stringify(obj) });
-  const page = (values, startAt) => ({ values: values.slice(startAt, startAt + pageSize), isLast: startAt + pageSize >= values.length });
-  const asFilter = (f) => ({ id: f.id, name: f.name, jql: f.jql, owner: { emailAddress: f.ownerEmail } });
-
-  const request = async (path, init = {}) => {
-    const url = new URL(path, 'https://x.invalid');
-    const startAt = Number(url.searchParams.get('startAt') ?? 0);
-    const e = world.entities;
-    const plain = (list = []) => list.map(({ id, name }) => ({ id, name }));
-    const filterId = url.pathname.match(/^\/rest\/api\/3\/filter\/(\d+)$/)?.[1];
-    if (filterId && init.method === 'PUT') {
-      const { name, jql } = JSON.parse(init.body);
-      writes.push({ id: filterId, name, jql });
-      filters.get(filterId).jql = jql;
-      return body({});
-    }
-    if (filterId) return body(asFilter(filters.get(filterId)));
-    switch (url.pathname) {
-      case '/rest/api/3/project/search': return body(page(e.project, startAt));
-      case '/rest/api/3/status': return body(plain(e.status));
-      case '/rest/api/3/issuetype': return body(plain(e.issuetype));
-      case '/rest/api/3/priority/search': return body(page(plain(e.priority), startAt));
-      case '/rest/api/3/field': return body(plain(e.field));
-      case '/rest/api/3/users/search': return body(e.user.map((u) => ({ accountId: u.id, displayName: u.name, emailAddress: u.email, accountType: 'atlassian' })));
-      case '/rest/api/3/filter/search': return body(page([...filters.values()].map(asFilter), startAt));
-      default:
-        if (/\/project\/\d+\/(versions|components)$/.test(url.pathname)) return body([]);
-        return body({ errorMessages: [`fake Jira has no route ${url.pathname}`] });
-    }
-  };
-  return { request, writes, filters };
-}
+const newAudit = () => makeAuditLog(memoryStore(), { now: tickingClock() });
 
 test('readCloudWorld follows pagination and maps accountId, key and filter owner', async () => {
   const world = await readCloudWorld(fakeJira(cloud, { pageSize: 1 }).request);
@@ -69,12 +38,31 @@ test('runAnalysis through fake Jira proposes the same repairs as the engine', as
 
 test('runApply writes only chosen repairable filters, keeps names, verifies on live state, and is idempotent', async () => {
   const jira = fakeJira(cloud);
-  const input = { snapshotText: JSON.stringify(source), requestJira: jira.request };
+  const input = { snapshotText: JSON.stringify(source), requestJira: jira.request, audit: newAudit(), runId: 'run-1' };
   const first = await runApply({ ...input, filterIds: ['20001', '20003', '99999'] });
-  assert.deepEqual(first, { done: ['20001'], skipped: [], ignored: ['20003', '99999'], stillStale: [] });
+  assert.deepEqual(first, { runId: 'run-1', done: ['20001'], skipped: [], failed: [], auditErrors: [], ignored: ['20003', '99999'], stillStale: [] });
   assert.deepEqual(jira.writes, [{ id: '20001', name: 'Billing open', jql: 'project = 10300 AND status = 10002' }]);
   assert.equal(jira.filters.get('20003').jql, 'status = "In Review"');
   const second = await runApply({ ...input, filterIds: ['20001'] });
   assert.deepEqual(second.done, []);
   assert.equal(jira.writes.length, 1);
+});
+
+test('a filter the admin cannot edit is reported, and the others still get repaired', async () => {
+  const jira = fakeJira(cloud, { denyPut: ['20002'] });
+  const result = await runApply({ snapshotText: JSON.stringify(source), requestJira: jira.request, filterIds: ['20001', '20002'], audit: newAudit() });
+  assert.deepEqual(result.done, ['20001']);
+  assert.equal(result.failed.length, 1);
+  assert.match(result.failed[0].message, /HTTP 403.*owner/);
+  assert.deepEqual(result.stillStale, ['Team work']);
+});
+
+test('runAnalysis pairs by the ID mapping report and demands the filter type name with it', async () => {
+  const renamed = { ...cloud, filters: cloud.filters.map((f) => (f.id === '20001' ? { ...f, name: 'Billing open (migrated)' } : f)) };
+  const input = { snapshotText: JSON.stringify(source), requestJira: fakeJira(renamed).request };
+  assert.ok((await runAnalysis(input)).notMigrated.some((f) => f.name === 'Billing open'));
+  const paired = await runAnalysis({ ...input, idMappingCsv: 'test:filter,1,20001', filterType: 'test:filter' });
+  assert.ok(!paired.notMigrated.some((f) => f.name === 'Billing open'));
+  assert.equal(paired.filters.find((f) => f.filterId === '20001').proposed, 'project = 10300 AND status = 10002');
+  await assert.rejects(runAnalysis({ ...input, idMappingCsv: 'test:filter,1,20001' }), /needs filterType/);
 });

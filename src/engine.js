@@ -3,7 +3,8 @@ import { extractReferences, rewrite } from './jql.js';
 /** @typedef {import('./jql.js').EntityType} EntityType */
 /** @typedef {{ id: string, name: string, key?: string, email?: string }} Entity */
 /** @typedef {{ id: string, name: string, ownerEmail: string, jql: string }} SavedFilter */
-/** @typedef {{ entities: Partial<Record<EntityType, Entity[]>>, filters: SavedFilter[] }} World */
+/** @typedef {{ id: string, name: string, config: import('./board-parity.js').BoardConfig, issues: { id: string, statusId?: string }[] }} SourceBoard */
+/** @typedef {{ entities: Partial<Record<EntityType, Entity[]>>, filters: SavedFilter[], boards?: SourceBoard[] }} World */
 /** @typedef {'ok'|'stale'|'wrong-entity'|'missing'|'ambiguous'|'unknown-in-source'|'structure-changed'} Status */
 /** @typedef {{ type?: EntityType, was: string, now: string, status: Status, meant?: string, resolvesNowTo?: string, fix?: { start: number, end: number, text: string } }} Finding */
 /** @typedef {{ filterId: string, name: string, sourceJql: string, original: string, proposed: string, findings: Finding[] }} FilterReport */
@@ -67,14 +68,19 @@ export function diagnoseQuery(sourceJql, cloudJql, source, cloud) {
   return { findings, proposed: rewrite(cloudJql, findings.flatMap((f) => f.fix ?? [])) };
 }
 
-/** @param {World} source @param {World} cloud @returns {{ reports: FilterReport[], notMigrated: { id: string, name: string }[] }} */
-export function analyse(source, cloud) {
+/**
+ * Filters are paired by `pairById` (the ID Mapping Report) first, then by owner email plus name.
+ * @param {World} source @param {World} cloud @param {{ pairById?: (sourceId: string) => string | undefined }} [options]
+ * @returns {{ reports: FilterReport[], notMigrated: { id: string, name: string }[] }}
+ */
+export function analyse(source, cloud, { pairById } = {}) {
   const slot = (f) => `${f.ownerEmail}|${f.name}`.toLowerCase();
   const migrated = new Map(cloud.filters.map((f) => [slot(f), f]));
+  const byCloudId = new Map(cloud.filters.map((f) => [f.id, f]));
   const reports = [];
   const notMigrated = [];
   for (const src of source.filters) {
-    const dst = migrated.get(slot(src));
+    const dst = byCloudId.get(pairById?.(src.id)) ?? migrated.get(slot(src));
     if (!dst) {
       notMigrated.push({ id: src.id, name: src.name });
       continue;
@@ -97,24 +103,30 @@ export function verify(report, source, cloud) {
 
 /**
  * Cloud itself is the journal: a filter already holding `proposed` is skipped, so an interrupted
- * run resumes by calling this again. A filter holding neither `original` nor `proposed` aborts the run.
+ * run resumes by calling this again. One filter failing (not the owner, edited since analysis,
+ * network) is recorded and the rest continue.
  * @param {FilterReport[]} reports
  * @param {{ readJql: (id: string) => Promise<string>, writeJql: (id: string, jql: string) => Promise<void> }} io
  */
 export async function applyRepairs(reports, { readJql, writeJql }) {
   const done = [];
   const skipped = [];
+  const failed = [];
   for (const r of reports) {
-    const current = await readJql(r.filterId);
-    if (current === r.proposed) {
-      skipped.push(r.filterId);
-      continue;
+    try {
+      const current = await readJql(r.filterId);
+      if (current === r.proposed) {
+        skipped.push(r.filterId);
+        continue;
+      }
+      if (current !== r.original) {
+        throw new Error(`changed since analysis: expected "${r.original}", found "${current}". Re-run analysis and apply again.`);
+      }
+      await writeJql(r.filterId, r.proposed);
+      done.push(r.filterId);
+    } catch (error) {
+      failed.push({ filterId: r.filterId, name: r.name, message: error.message });
     }
-    if (current !== r.original) {
-      throw new Error(`Filter ${r.filterId} ("${r.name}") changed since analysis: expected "${r.original}", found "${current}". Re-run analyse() and apply again.`);
-    }
-    await writeJql(r.filterId, r.proposed);
-    done.push(r.filterId);
   }
-  return { done, skipped };
+  return { done, skipped, failed };
 }

@@ -60,14 +60,26 @@ test('interrupted apply resumes without rewriting finished filters', async () =>
     if (++writes === 2) throw new Error('network down');
     store.set(id, jql);
   };
-  await assert.rejects(applyRepairs(repairs, { readJql, writeJql: flaky }), /network down/);
+  const first = await applyRepairs(repairs, { readJql, writeJql: flaky });
+  assert.deepEqual(first.done, ['20001']);
+  assert.deepEqual(first.failed.map((f) => [f.filterId, f.message]), [['20002', 'network down']]);
   const resumed = await applyRepairs(repairs, { readJql, writeJql: async (id, jql) => void store.set(id, jql) });
-  assert.deepEqual(resumed, { done: ['20002'], skipped: ['20001'] });
+  assert.deepEqual(resumed, { done: ['20002'], skipped: ['20001'], failed: [] });
   for (const r of repairs) assert.equal(store.get(r.filterId), r.proposed);
 });
 
 test('apply refuses to overwrite a filter edited after analysis', async () => {
   const [first] = reports.filter(needsRepair);
   const io = { readJql: async () => 'project = 1', writeJql: async () => assert.fail('must not write') };
-  await assert.rejects(applyRepairs([first], io), /changed since analysis/);
+  const result = await applyRepairs([first], io);
+  assert.deepEqual(result.done, []);
+  assert.match(result.failed[0].message, /changed since analysis/);
+});
+
+test('a filter renamed in Cloud is found through the ID mapping, and name+owner still works without it', () => {
+  const renamed = { ...cloud, filters: cloud.filters.map((f) => (f.id === '20001' ? { ...f, name: 'Renamed' } : f)) };
+  assert.ok(analyse(source, renamed).notMigrated.some((f) => f.name === 'Billing open'));
+  const paired = analyse(source, renamed, { pairById: (id) => ({ 1: '20001' })[id] });
+  assert.ok(!paired.notMigrated.some((f) => f.name === 'Billing open'));
+  assert.equal(paired.reports.find((r) => r.filterId === '20001').proposed, 'project = 10300 AND status = 10002');
 });
