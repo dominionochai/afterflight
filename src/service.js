@@ -2,7 +2,7 @@ import { analyse, applyRepairs, needsRepair, openFindings, staleFindings } from 
 import { filterIo, getJson as cloudGetJson, readCloudWorld, readPlans } from './cloud-reader.js';
 import { parseSnapshot } from './snapshot.js';
 import { parseIdMapping } from './idmap.js';
-import { readBoardConfig, readCloudBoardIssues } from './board-readers.js';
+import { readBoardConfig, readBoardFilterUsage, readCloudBoardIssues } from './board-readers.js';
 import { compareBoardConfig, compareBoardIssues } from './board-parity.js';
 import { appliedRepairs } from './audit.js';
 import { randomUUID } from 'node:crypto';
@@ -22,20 +22,34 @@ async function planContext(requestJira) {
   }
 }
 
+async function boardContext(requestJira) {
+  try {
+    const { usage, skipped } = await readBoardFilterUsage((path) => cloudGetJson(requestJira, path));
+    return skipped.length
+      ? { usage, boardsNote: `Could not read the configuration of ${skipped.length} board(s) (${skipped.map((s) => s.id).join(', ')}), so boards using a filter may be missing from this list.` }
+      : { usage };
+  } catch (error) {
+    return { boardsNote: `Boards were not checked (${error.message}).` };
+  }
+}
+
 /** @param {{ snapshotText: string, requestJira: import('./cloud-reader.js').RequestJira, idMappingCsv?: string, filterType?: string }} input */
 export async function runAnalysis({ snapshotText, requestJira, idMappingCsv, filterType }) {
   const source = parseSnapshot(snapshotText);
   const { reports, notMigrated } = analyse(source, await readCloudWorld(requestJira), pairing(idMappingCsv, filterType));
   const { plans, plansNote } = await planContext(requestJira);
+  const { usage, boardsNote } = await boardContext(requestJira);
   return {
     notMigrated,
     plansNote,
+    boardsNote,
     filters: reports.map((r) => ({
       filterId: r.filterId,
       name: r.name,
       original: r.original,
       proposed: r.proposed,
       canRepair: needsRepair(r),
+      boards: (usage?.get(r.filterId) ?? []).map(({ id, name }) => ({ id, name })),
       plans: (plans ?? [])
         .filter((p) => p.issueSources.some((s) => s.type === 'Filter' && s.value === r.filterId))
         .map(({ id, name, status }) => ({ id, name, status })),

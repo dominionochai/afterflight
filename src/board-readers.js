@@ -57,3 +57,23 @@ export async function readCloudBoardIssues(getJson, boardId) {
     if (!token || page.issues.length === 0) return { issues };
   }
 }
+
+/**
+ * Which boards sit on which filter, from each board's own configuration. One request per board, so a site with
+ * many boards is slow; a board whose configuration cannot be read is reported, never skipped silently.
+ * @param {GetJson} getJson
+ * @returns {Promise<{ usage: Map<string, { id: string, name: string, type: string }[]>, skipped: { id: string, message: string }[] }>}
+ */
+export async function readBoardFilterUsage(getJson) {
+  const usage = new Map();
+  const skipped = [];
+  for (const board of await readBoards(getJson)) {
+    try {
+      const { filter } = await readBoardConfig(getJson, board.id);
+      usage.set(String(filter.id), [...(usage.get(String(filter.id)) ?? []), board]);
+    } catch (error) {
+      skipped.push({ id: board.id, message: error.message });
+    }
+  }
+  return { usage, skipped };
+}

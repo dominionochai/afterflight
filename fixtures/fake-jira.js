@@ -1,5 +1,5 @@
 // SYNTHETIC: an in-memory stand-in for the Jira Cloud REST API, used only by tests.
-export function fakeJira(world, { pageSize = 2, status = 200, denyPut = [], boards = {}, plans } = {}) {
+export function fakeJira(world, { pageSize = 2, status = 200, denyPut = [], boards = {}, plans, brokenBoards = [] } = {}) {
   const filters = new Map(world.filters.map((f) => [f.id, { ...f }]));
   const writes = [];
   const body = (obj) => ({ ok: status < 400, status, json: async () => obj, text: async () => JSON.stringify(obj) });
@@ -23,7 +23,12 @@ export function fakeJira(world, { pageSize = 2, status = 200, denyPut = [], boar
     }
     if (filterId) return body(asFilter(filters.get(filterId)));
     const boardConfig = url.pathname.match(/^\/rest\/agile\/1\.0\/board\/(\d+)\/configuration$/);
+    if (boardConfig && brokenBoards.includes(boardConfig[1])) return { ok: false, status: 403, json: async () => ({}), text: async () => 'no access to this board' };
     if (boardConfig) return body(boards[boardConfig[1]].config);
+    if (url.pathname === '/rest/agile/1.0/board') {
+      const all = Object.keys(boards).map((id) => ({ id: Number(id), name: boards[id].name ?? `Board ${id}`, type: 'scrum' }));
+      return body(page(all, startAt));
+    }
     const boardIssues = url.pathname.match(/^\/rest\/software\/1\.0\/board\/(\d+)\/issue$/);
     if (boardIssues) {
       const all = boards[boardIssues[1]].issues;
