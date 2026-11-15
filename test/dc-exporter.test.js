@@ -89,5 +89,18 @@ test('CLI reads filter ids from the ID mapping report, takes the credential from
 
 test('CLI explains missing configuration instead of guessing', async () => {
   await assert.rejects(main(['--out', 'x.json'], {}), /Usage: node bin\/export-dc\.js/);
-  await assert.rejects(main(['--out', 'x', '--base-url', 'http://h', '--id-mapping', 'r.csv'], { AFTERFLIGHT_DC_AUTH: 'a' }), /--filter-type/);
+});
+
+test('CLI uses the published filter Entity Type when none is given', async () => {
+  const dc = await startFakeDc();
+  try {
+    const dir = await mkdtemp(join(tmpdir(), 'afterflight-'));
+    const report = join(dir, 'report.csv');
+    const out = join(dir, 'snapshot.json');
+    await writeFile(report, 'Entity Type,Server ID,Cloud ID\njira:filter,555,9555\n');
+    await main(['--base-url', dc.baseUrl, '--out', out, '--id-mapping', report], { AFTERFLIGHT_DC_AUTH: 'Bearer t' }, () => {});
+    assert.deepEqual(JSON.parse(await readFile(out, 'utf8')).filters.map((f) => f.id), ['555', '100']);
+  } finally {
+    dc.server.close();
+  }
 });

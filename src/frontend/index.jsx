@@ -3,8 +3,9 @@ import ForgeReconciler, {
   Button, Checkbox, CodeBlock, DynamicTable, Heading, Lozenge, SectionMessage, Stack, Tab, TabList, TabPanel, Tabs, Text, TextArea, Textfield,
 } from '@forge/react';
 import { invoke } from '@forge/bridge';
+import { DEFAULT_ENTITY_TYPES } from '../entity-types.js';
 
-const TYPE_KEYS = ['board', 'filter', 'field', 'issue'];
+const TYPE_KEYS = Object.keys(DEFAULT_ENTITY_TYPES);
 const head = (labels) => ({ cells: labels.map((content) => ({ key: content, content })) });
 const FILTER_HEAD = head(['Apply', 'Filter', 'Original', 'Proposed', 'Used by boards', 'Used by plans', 'Left for you']);
 const BOARD_HEAD = head(['Board', 'Status', 'Config findings', 'Missing issues', 'Unexpected issues', 'Notes']);
@@ -30,7 +31,7 @@ function boardRow(b) {
 const App = () => {
   const [snapshotText, setSnapshotText] = useState('');
   const [idMappingCsv, setIdMappingCsv] = useState('');
-  const [types, setTypes] = useState({ board: '', filter: '', field: '', issue: '' });
+  const [types, setTypes] = useState({});
   const [analysis, setAnalysis] = useState();
   const [picked, setPicked] = useState([]);
   const [outcome, setOutcome] = useState();
@@ -39,9 +40,9 @@ const App = () => {
   const [report, setReport] = useState();
   const [error, setError] = useState();
 
-  const hasTypes = TYPE_KEYS.every((k) => types[k]);
-  const filterPayload = { snapshotText, ...(idMappingCsv ? { idMappingCsv, filterType: types.filter } : {}) };
-  const boardPayload = { snapshotText, idMappingCsv, types };
+  const overrides = Object.fromEntries(Object.entries(types).filter(([, v]) => v));
+  const filterPayload = { snapshotText, ...(idMappingCsv ? { idMappingCsv, types: overrides } : {}) };
+  const boardPayload = { snapshotText, idMappingCsv, types: overrides };
 
   const call = async (action, payload, onResult) => {
     setError();
@@ -60,7 +61,7 @@ const App = () => {
   const apply = () => call('apply', { ...filterPayload, filterIds: picked }, (result) => { setOutcome(result); setRollback(); });
   const undo = () => call('rollback', { runId: outcome.runId }, setRollback);
   const compareBoards = () => call('boardParity', boardPayload, setBoards);
-  const makeReport = () => call('report', { ...filterPayload, ...(hasTypes ? boardPayload : {}) }, setReport);
+  const makeReport = () => call('report', { ...filterPayload, ...(idMappingCsv ? boardPayload : {}) }, setReport);
   const toggle = (id) => setPicked((now) => (now.includes(id) ? now.filter((x) => x !== id) : [...now, id]));
 
   const filterRows = analysis?.filters.map((f) => ({
@@ -92,11 +93,11 @@ const App = () => {
           <Stack space="space.150">
             <Text weight="bold">Data Center snapshot (JSON)</Text>
             <TextArea value={snapshotText} isMonospaced minimumRows={6} onChange={(e) => setSnapshotText(e.target.value)} />
-            <Text weight="bold">JCMA ID Mapping Report (CSV, optional for filters, required for boards)</Text>
+            <Text weight="bold">JCMA ID Mapping Report (CSV). Recommended for filters, required for boards</Text>
             <TextArea value={idMappingCsv} isMonospaced minimumRows={6} onChange={(e) => setIdMappingCsv(e.target.value)} />
-            <Text>Entity Type strings exactly as written in the report's first column:</Text>
+            <Text>Entity Type strings default to Atlassian's published names. Override one only if your report names it differently:</Text>
             {TYPE_KEYS.map((k) => (
-              <Textfield key={k} placeholder={`Entity Type for ${k}`} value={types[k]} onChange={(e) => setTypes({ ...types, [k]: e.target.value })} />
+              <Textfield key={k} placeholder={`${k}: ${DEFAULT_ENTITY_TYPES[k]}`} value={types[k]} onChange={(e) => setTypes({ ...types, [k]: e.target.value })} />
             ))}
           </Stack>
         </TabPanel>
@@ -125,8 +126,8 @@ const App = () => {
         </TabPanel>
         <TabPanel>
           <Stack space="space.150">
-            <Button appearance="primary" isDisabled={!hasTypes || !idMappingCsv} onClick={compareBoards}>Compare boards</Button>
-            {(!hasTypes || !idMappingCsv) && <Text>Board comparison needs the ID Mapping Report and all four Entity Type strings (Inputs tab).</Text>}
+            <Button appearance="primary" isDisabled={!idMappingCsv} onClick={compareBoards}>Compare boards</Button>
+            {!idMappingCsv && <Text>Board comparison needs the ID Mapping Report (Inputs tab).</Text>}
             {boardRows && <DynamicTable head={BOARD_HEAD} rows={boardRows} />}
           </Stack>
         </TabPanel>

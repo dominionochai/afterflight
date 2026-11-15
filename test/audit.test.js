@@ -89,7 +89,7 @@ test('integrity report states coverage, counts, caveats and the audit trail', as
     { boardId: '7', name: 'Big board', cloudBoardId: '70', status: 'compared', sourceTruncated: true, configFindings: [{ area: 'filter', status: 'mismatch', detail: 'x' }],
       issues: { missing: [{ sourceId: '2' }], unexpected: [], unmapped: ['9'], matched: 1, complete: false } },
   ];
-  const report = buildIntegrityReport({ generatedAt: '2026-11-13T12:00:00.000Z', analysis, boards, auditEntries: await audit.list() });
+  const report = buildIntegrityReport({ generatedAt: '2026-11-15T12:00:00.000Z', analysis, boards, auditEntries: await audit.list() });
   assert.deepEqual(report.summary.repairs, { applied: 1, failed: 0, rolledBack: 0 });
   assert.deepEqual(report.summary.boards, { total: 2, compared: 1, withConfigFindings: 1, withMissingIssues: 1 });
   assert.equal(report.summary.filters.notMigrated, 1);

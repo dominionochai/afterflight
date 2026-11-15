@@ -5,13 +5,18 @@ import { parseIdMapping } from './idmap.js';
 import { readBoardConfig, readBoardFilterUsage, readCloudBoardIssues } from './board-readers.js';
 import { compareBoardConfig, compareBoardIssues } from './board-parity.js';
 import { appliedRepairs } from './audit.js';
+import { DEFAULT_ENTITY_TYPES } from './entity-types.js';
 import { randomUUID } from 'node:crypto';
 
-function pairing(idMappingCsv, filterType) {
+/** Report-first lookups. `types` overrides DEFAULT_ENTITY_TYPES for any entity type whose Entity Type string differs. */
+function pairing(idMappingCsv, types) {
   if (!idMappingCsv) return {};
-  if (!filterType) throw new Error('idMappingCsv needs filterType, the Entity Type string the ID Mapping Report uses for filters.');
   const ids = parseIdMapping(idMappingCsv);
-  return { pairById: (sourceId) => ids.get(filterType, sourceId) };
+  const names = { ...DEFAULT_ENTITY_TYPES, ...types };
+  return {
+    pairById: (sourceId) => ids.get(names.filter, sourceId),
+    mapId: (type, serverId) => (names[type] ? ids.get(names[type], serverId) : undefined),
+  };
 }
 
 async function planContext(requestJira) {
@@ -33,10 +38,10 @@ async function boardContext(requestJira) {
   }
 }
 
-/** @param {{ snapshotText: string, requestJira: import('./cloud-reader.js').RequestJira, idMappingCsv?: string, filterType?: string }} input */
-export async function runAnalysis({ snapshotText, requestJira, idMappingCsv, filterType }) {
+/** @param {{ snapshotText: string, requestJira: import('./cloud-reader.js').RequestJira, idMappingCsv?: string, types?: Partial<Record<string, string>> }} input */
+export async function runAnalysis({ snapshotText, requestJira, idMappingCsv, types }) {
   const source = parseSnapshot(snapshotText);
-  const { reports, notMigrated } = analyse(source, await readCloudWorld(requestJira), pairing(idMappingCsv, filterType));
+  const { reports, notMigrated } = analyse(source, await readCloudWorld(requestJira), pairing(idMappingCsv, types));
   const { plans, plansNote } = await planContext(requestJira);
   const { usage, boardsNote } = await boardContext(requestJira);
   return {
@@ -103,12 +108,12 @@ async function recordLeftovers(audit, ctx, reports, { skipped, failed }) {
  * Re-analyses server-side and applies only what this run proposes; JQL from the client is never trusted.
  * @param {{ snapshotText: string, filterIds: string[], requestJira: import('./cloud-reader.js').RequestJira,
  *   audit: ReturnType<typeof import('./audit.js').makeAuditLog>, actor?: string, runId?: string,
- *   idMappingCsv?: string, filterType?: string }} input
+ *   idMappingCsv?: string, types?: Partial<Record<string, string>> }} input
  */
-export async function runApply({ snapshotText, filterIds, requestJira, audit, actor = 'unknown', runId = randomUUID(), idMappingCsv, filterType }) {
+export async function runApply({ snapshotText, filterIds, requestJira, audit, actor = 'unknown', runId = randomUUID(), idMappingCsv, types }) {
   requireAudit(audit);
   const source = parseSnapshot(snapshotText);
-  const options = pairing(idMappingCsv, filterType);
+  const options = pairing(idMappingCsv, types);
   const { reports } = analyse(source, await readCloudWorld(requestJira), options);
   const chosen = reports.filter((r) => needsRepair(r) && filterIds.includes(r.filterId));
   const ctx = { runId, actor, action: 'repair' };
@@ -142,7 +147,7 @@ export async function runRollback({ requestJira, audit, runId, actor = 'unknown'
   return { runId: rollbackRunId, rollbackOf: runId, ...result, auditErrors };
 }
 
-const REQUIRED_TYPES = ['board', 'filter', 'field', 'issue'];
+const customFieldId = (value) => (value !== undefined && /^\d+$/.test(value) ? `customfield_${value}` : value);
 
 function nameMapper(source, cloud, type) {
   return (sourceId) => {
@@ -154,31 +159,32 @@ function nameMapper(source, cloud, type) {
 }
 
 /**
- * Compares each exported DC board with its Cloud counterpart. Boards, filters, fields and issues are mapped through
- * the JCMA ID Mapping Report; statuses are not in the report's documented coverage, so they map by unique name.
- * `types` holds the report's Entity Type strings, which only a real report can supply.
- * @param {{ snapshotText: string, idMappingCsv: string, types: Record<'board'|'filter'|'field'|'issue', string>,
+ * Compares each exported DC board with its Cloud counterpart. Boards, filters, fields, statuses and issues are
+ * mapped through the JCMA ID Mapping Report; a status without a report row falls back to a unique name match.
+ * `types` optionally overrides DEFAULT_ENTITY_TYPES when a report names an entity type differently.
+ * @param {{ snapshotText: string, idMappingCsv: string, types?: Partial<Record<string, string>>,
  *   requestJira: import('./cloud-reader.js').RequestJira }} input
  */
 export async function runBoardParity({ snapshotText, idMappingCsv, types, requestJira }) {
-  const absent = REQUIRED_TYPES.filter((key) => !types?.[key]);
-  if (absent.length) {
-    throw new Error(`Entity type names for ${absent.join(', ')} are required. Copy them from the Entity Type column of your JCMA ID Mapping Report.`);
+  if (!idMappingCsv) {
+    throw new Error('Board comparison needs the JCMA ID Mapping Report (CSV). Download it from the Logs and Reports tab of your migration in JCMA.');
   }
+  const names = { ...DEFAULT_ENTITY_TYPES, ...types };
   const source = parseSnapshot(snapshotText);
   const ids = parseIdMapping(idMappingCsv);
   const cloud = await readCloudWorld(requestJira);
   const getJson = (path) => cloudGetJson(requestJira, path);
-  const statusMap = nameMapper(source, cloud, 'status');
+  const statusByName = nameMapper(source, cloud, 'status');
   const fieldByName = nameMapper(source, cloud, 'field');
+  const statusMap = (id) => ids.get(names.status, id) ?? statusByName(id);
   const map = {
-    filter: (id) => ids.get(types.filter, id),
+    filter: (id) => ids.get(names.filter, id),
     status: statusMap,
-    field: (id) => ids.get(types.field, id) ?? fieldByName(id),
+    field: (id) => customFieldId(ids.get(names.field, id) ?? ids.get(names.field, id.replace(/^customfield_/, ''))) ?? fieldByName(id),
   };
   const results = [];
   for (const board of source.boards) {
-    const cloudBoardId = ids.get(types.board, board.id);
+    const cloudBoardId = ids.get(names.board, board.id);
     if (cloudBoardId === undefined) {
       results.push({ boardId: board.id, name: board.name, status: 'board-not-mapped' });
       continue;
@@ -192,7 +198,7 @@ export async function runBoardParity({ snapshotText, idMappingCsv, types, reques
       sourceTruncated: board.issueTotal !== undefined && board.issues.length < board.issueTotal,
       configFindings: compareBoardConfig(board.config, config, map),
       issues: compareBoardIssues(board.issues, issues, {
-        mapIssue: (id) => ids.get(types.issue, id),
+        mapIssue: (id) => ids.get(names.issue, id),
         mapStatus: statusMap,
         cloudBoardStatusIds: new Set(config.columnConfig.columns.flatMap((c) => c.statuses.map((s) => s.id))),
       }),

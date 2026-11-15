@@ -99,17 +99,12 @@ test('runBoardParity compares a mapped board and reports an unmapped one', async
   assert.deepEqual(orphan, { boardId: '8', name: 'Orphan board', status: 'board-not-mapped' });
 });
 
-test('runBoardParity refuses to run without the report entity type names', async () => {
-  const jira = fakeJira(cloudWorld);
-  await assert.rejects(
-    runBoardParity({ snapshotText: JSON.stringify(source), idMappingCsv: CSV, types: { board: 'test:board' }, requestJira: jira.request }),
-    /Entity type names for filter, field, issue are required/,
-  );
-});
-
-test('runBoardParity flags a board whose Data Center export was truncated', async () => {
-  const truncated = { ...source, boards: [{ ...source.boards[0], issueTotal: 10 }] };
+test('runBoardParity needs the ID Mapping Report, and uses the published entity types unless overridden', async () => {
   const jira = fakeJira(cloudWorld, { boards: { 70: cloudBoard } });
-  const [board] = await runBoardParity({ snapshotText: JSON.stringify(truncated), idMappingCsv: CSV, types: TYPES, requestJira: jira.request });
-  assert.equal(board.sourceTruncated, true);
+  await assert.rejects(runBoardParity({ snapshotText: JSON.stringify(source), idMappingCsv: '', requestJira: jira.request }), /needs the JCMA ID Mapping Report/);
+  const defaults = CSV.replaceAll('test:board', 'jira/classic/software:rapidView').replaceAll('test:filter', 'jira:filter')
+    .replaceAll('test:field', 'jira/classic:customField').replaceAll('test:issue', 'jira:issue');
+  const [board] = await runBoardParity({ snapshotText: JSON.stringify(source), idMappingCsv: defaults, requestJira: jira.request });
+  assert.equal(board.status, 'compared');
+  assert.deepEqual(board.configFindings, []);
 });

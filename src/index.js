@@ -30,7 +30,7 @@ resolver.define('apply', ({ payload, context }) => runApply({ ...payload, reques
 resolver.define('rollback', ({ payload, context }) => runRollback({ runId: payload.runId, requestJira, audit, actor: actorOf(context) }));
 resolver.define('report', async ({ payload }) => {
   const analysis = await runAnalysis({ ...payload, requestJira });
-  const boards = payload.types ? await runBoardParity({ ...payload, requestJira }) : [];
+  const boards = payload.idMappingCsv ? await runBoardParity({ ...payload, requestJira }) : [];
   const report = buildIntegrityReport({ generatedAt: new Date().toISOString(), analysis, boards, auditEntries: await audit.list() });
   return { report, markdown: renderMarkdown(report) };
 });

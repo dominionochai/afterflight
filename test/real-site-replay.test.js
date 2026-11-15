@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { analyse, needsRepair, openFindings } from '../src/engine.js';
 
-// Cloud entities below were read (read-only) from a real Jira Cloud site on 2026-11-13: one project and its 16 statuses.
+// Cloud entities below were read (read-only) from a real Jira Cloud site on 2026-11-15: one project and its 16 statuses.
 // The Data Center side and the two saved filters are SYNTHETIC replays of queries run against that site:
 //   "project = 10100 AND status = 3"     -> Atlassian answered HTTP 400, "A value with ID '10100' does not exist for the field 'project'."
 //   "project = 10000 AND status = 10000" -> Atlassian accepted it with no error (status 10000 is "Waiting for support" there).

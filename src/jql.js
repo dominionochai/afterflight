@@ -10,6 +10,8 @@ const ENTITY_FIELDS = {
 
 const TOKEN = /(cf\[\d+\])|"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|(!=|!~|<=|>=|[=<>~])|([(),])|([^\s=!<>~(),"']+)/g;
 
+const KEYWORDS = new Set(['and', 'or', 'not', 'is', 'in', 'by', 'order', 'was', 'changed']);
+
 const isPunct = (token, char) => token?.kind === 'punct' && token.text === char;
 
 /** @param {string} jql @returns {Token[]} */
@@ -28,7 +30,8 @@ function afterOperator(tokens, i) {
   if (!t) return -1;
   if (t.kind === 'op') return i + 1;
   const word = t.kind === 'word' ? t.text.toLowerCase() : '';
-  if (word === 'in' || word === 'is') return i + 1;
+  if (word === 'in') return i + 1;
+  if (word === 'is') return tokens[i + 1]?.text.toLowerCase() === 'not' ? i + 2 : i + 1;
   if (word === 'not' && tokens[i + 1]?.text.toLowerCase() === 'in') return i + 2;
   return -1;
 }
@@ -68,6 +71,7 @@ export function extractReferences(jql) {
   const refs = [];
   tokens.forEach((field, i) => {
     if (field.kind === 'op' || field.kind === 'punct') return;
+    if (field.kind === 'word' && KEYWORDS.has(field.text.toLowerCase())) return;
     const valuesAt = afterOperator(tokens, i + 1);
     if (valuesAt < 0) return;
     const type = field.kind === 'cf' ? undefined : ENTITY_FIELDS[field.text.toLowerCase()];

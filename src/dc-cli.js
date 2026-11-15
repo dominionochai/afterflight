@@ -1,10 +1,11 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { exportDcSnapshot, makeDcGetJson } from './dc-exporter.js';
+import { DEFAULT_ENTITY_TYPES } from './entity-types.js';
 import { parseIdMapping } from './idmap.js';
 
 const USAGE = [
   'Usage: node bin/export-dc.js --out snapshot.json --base-url https://jira.example.com',
-  '         [--id-mapping report.csv --filter-type "<Entity Type used for filters in the report>"]',
+  '         [--id-mapping report.csv [--filter-type "<Entity Type for filters, default jira:filter>"]]',
   'The credential is read from AFTERFLIGHT_DC_AUTH as a full Authorization header value, e.g. "Bearer <token>".',
   'The base URL may instead come from AFTERFLIGHT_DC_URL. The export only issues GET requests.',
 ].join('\n');
@@ -27,8 +28,7 @@ export async function main(argv, env, log = console.log) {
 
   let filterIds = [];
   if (args['id-mapping']) {
-    if (!args['filter-type']) throw new Error('--id-mapping needs --filter-type, the Entity Type string the report uses for filters.');
-    filterIds = parseIdMapping(await readFile(args['id-mapping'], 'utf8')).serverIds(args['filter-type']);
+    filterIds = parseIdMapping(await readFile(args['id-mapping'], 'utf8')).serverIds(args['filter-type'] ?? DEFAULT_ENTITY_TYPES.filter);
   }
   const { snapshot, warnings } = await exportDcSnapshot({ getJson: makeDcGetJson({ baseUrl, authorization }), filterIds });
   await writeFile(args.out, JSON.stringify(snapshot, null, 2));

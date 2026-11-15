@@ -28,6 +28,11 @@ function resolve(world, type, literal) {
     ?? all.find((e) => e.name.toLowerCase() === wanted);
 }
 
+function cloudEntity(cloud, type, id) {
+  return entitiesOf(cloud, type).find((e) => e.id === id || (type === 'field' && e.id === `customfield_${id}`));
+}
+const serverKeys = (type, id) => (type === 'field' ? [id, id.replace(/^customfield_/, '')] : [id]);
+
 function render(type, entity) {
   if (type === 'field') return `cf[${entity.id.replace('customfield_', '')}]`;
   return /^\w+$/.test(entity.id) ? entity.id : `"${entity.id}"`;
@@ -35,14 +40,21 @@ function render(type, entity) {
 
 /**
  * Compare one reference as written at the source with the same slot in the migrated query.
- * Never guesses: no unique same-identity entity in Cloud means the reference is flagged, not fixed.
+ * The ID Mapping Report (`mapId`) decides first. Without a report row, a unique same-identity entity in Cloud is
+ * used. A report row pointing at an entity that no longer exists is flagged, never replaced by a name guess.
  */
-function judge(was, now, source, cloud) {
+function judge(was, now, source, cloud, mapId) {
   const base = { type: was.type, was: was.literal, now: now.literal };
   const meant = resolve(source, was.type, was.literal);
   if (!meant) return { ...base, status: 'unknown-in-source' };
   const current = resolve(cloud, now.type, now.literal);
-  const targets = entitiesOf(cloud, was.type).filter((e) => identity(e) === identity(meant));
+  const reported = serverKeys(was.type, meant.id).map((key) => mapId?.(was.type, key)).find((value) => value !== undefined);
+  if (reported !== undefined && !cloudEntity(cloud, was.type, reported)) {
+    return { ...base, status: 'missing', meant: meant.name, resolvesNowTo: current?.name, mappedCloudId: reported };
+  }
+  const targets = reported !== undefined
+    ? [cloudEntity(cloud, was.type, reported)]
+    : entitiesOf(cloud, was.type).filter((e) => identity(e) === identity(meant));
   if (targets.length !== 1) {
     return { ...base, status: targets.length ? 'ambiguous' : 'missing', meant: meant.name, resolvesNowTo: current?.name };
   }
@@ -58,22 +70,24 @@ function judge(was, now, source, cloud) {
 }
 
 /** @returns {{ findings: Finding[], proposed: string }} */
-export function diagnoseQuery(sourceJql, cloudJql, source, cloud) {
+export function diagnoseQuery(sourceJql, cloudJql, source, cloud, mapId) {
   const was = extractReferences(sourceJql);
   const now = extractReferences(cloudJql);
   if (was.length !== now.length || was.some((w, i) => w.type !== now[i].type)) {
     return { findings: [{ status: 'structure-changed', was: sourceJql, now: cloudJql }], proposed: cloudJql };
   }
-  const findings = was.map((w, i) => judge(w, now[i], source, cloud));
+  const findings = was.map((w, i) => judge(w, now[i], source, cloud, mapId));
   return { findings, proposed: rewrite(cloudJql, findings.flatMap((f) => f.fix ?? [])) };
 }
 
 /**
  * Filters are paired by `pairById` (the ID Mapping Report) first, then by owner email plus name.
- * @param {World} source @param {World} cloud @param {{ pairById?: (sourceId: string) => string | undefined }} [options]
+ * `mapId(type, serverId)` gives the report's Cloud ID for any entity type.
+ * @param {World} source @param {World} cloud
+ * @param {{ pairById?: (sourceId: string) => string | undefined, mapId?: (type: string, serverId: string) => string | undefined }} [options]
  * @returns {{ reports: FilterReport[], notMigrated: { id: string, name: string }[] }}
  */
-export function analyse(source, cloud, { pairById } = {}) {
+export function analyse(source, cloud, { pairById, mapId } = {}) {
   const slot = (f) => `${f.ownerEmail}|${f.name}`.toLowerCase();
   const migrated = new Map(cloud.filters.map((f) => [slot(f), f]));
   const byCloudId = new Map(cloud.filters.map((f) => [f.id, f]));
@@ -85,7 +99,7 @@ export function analyse(source, cloud, { pairById } = {}) {
       notMigrated.push({ id: src.id, name: src.name });
       continue;
     }
-    const { findings, proposed } = diagnoseQuery(src.jql, dst.jql, source, cloud);
+    const { findings, proposed } = diagnoseQuery(src.jql, dst.jql, source, cloud, mapId);
     reports.push({ filterId: dst.id, name: dst.name, sourceJql: src.jql, original: dst.jql, proposed, findings });
   }
   return { reports, notMigrated };
@@ -96,8 +110,8 @@ export const openFindings = (report) => report.findings.filter((f) => OPEN_STATU
 export const staleFindings = (report) => report.findings.filter((f) => STALE_STATUSES.has(f.status));
 
 /** Re-diagnose the proposed JQL against the same worlds. */
-export function verify(report, source, cloud) {
-  const rediagnosed = { findings: diagnoseQuery(report.sourceJql, report.proposed, source, cloud).findings };
+export function verify(report, source, cloud, mapId) {
+  const rediagnosed = { findings: diagnoseQuery(report.sourceJql, report.proposed, source, cloud, mapId).findings };
   return { hasStaleReferences: staleFindings(rediagnosed).length > 0, remaining: openFindings(rediagnosed) };
 }
 

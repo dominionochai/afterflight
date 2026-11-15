@@ -57,12 +57,13 @@ test('a filter the admin cannot edit is reported, and the others still get repai
   assert.deepEqual(result.stillStale, ['Team work']);
 });
 
-test('runAnalysis pairs by the ID mapping report and demands the filter type name with it', async () => {
+test('runAnalysis pairs by the ID mapping report, using the published filter type unless overridden', async () => {
   const renamed = { ...cloud, filters: cloud.filters.map((f) => (f.id === '20001' ? { ...f, name: 'Billing open (migrated)' } : f)) };
   const input = { snapshotText: JSON.stringify(source), requestJira: fakeJira(renamed).request };
   assert.ok((await runAnalysis(input)).notMigrated.some((f) => f.name === 'Billing open'));
-  const paired = await runAnalysis({ ...input, idMappingCsv: 'test:filter,1,20001', filterType: 'test:filter' });
+  const paired = await runAnalysis({ ...input, idMappingCsv: 'test:filter,1,20001', types: { filter: 'test:filter' } });
   assert.ok(!paired.notMigrated.some((f) => f.name === 'Billing open'));
   assert.equal(paired.filters.find((f) => f.filterId === '20001').proposed, 'project = 10300 AND status = 10002');
-  await assert.rejects(runAnalysis({ ...input, idMappingCsv: 'test:filter,1,20001' }), /needs filterType/);
+  const byDefault = await runAnalysis({ ...input, idMappingCsv: 'jira:filter,1,20001' });
+  assert.ok(!byDefault.notMigrated.some((f) => f.name === 'Billing open'));
 });
