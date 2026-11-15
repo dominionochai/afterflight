@@ -6,7 +6,7 @@ import { invoke } from '@forge/bridge';
 
 const TYPE_KEYS = ['board', 'filter', 'field', 'issue'];
 const head = (labels) => ({ cells: labels.map((content) => ({ key: content, content })) });
-const FILTER_HEAD = head(['Apply', 'Filter', 'Original', 'Proposed', 'Left for you']);
+const FILTER_HEAD = head(['Apply', 'Filter', 'Original', 'Proposed', 'Used by plans', 'Left for you']);
 const BOARD_HEAD = head(['Board', 'Status', 'Config findings', 'Missing issues', 'Unexpected issues', 'Notes']);
 
 const describeOpen = (open) => open.map((o) => `${o.type} "${o.was}" ${o.status}${o.meant ? ` (meant ${o.meant})` : ''}`).join('; ');
@@ -70,6 +70,7 @@ const App = () => {
       { key: 'name', content: f.name },
       { key: 'original', content: f.original },
       { key: 'proposed', content: f.canRepair ? f.proposed : 'unchanged' },
+      { key: 'plans', content: f.plans.map((p) => p.name).join(', ') },
       { key: 'open', content: describeOpen(f.open) },
     ],
   }));
@@ -101,6 +102,7 @@ const App = () => {
         <TabPanel>
           <Stack space="space.150">
             <Button appearance="primary" onClick={analyse}>Analyse filters</Button>
+            {analysis?.plansNote && <SectionMessage appearance="information" title="Plans not checked"><Text>{analysis.plansNote}</Text></SectionMessage>}
             {analysis?.notMigrated.length > 0 && (
               <SectionMessage appearance="warning" title="Filters not migrated"><Text>{analysis.notMigrated.map((f) => f.name).join(', ')}</Text></SectionMessage>
             )}

@@ -1,5 +1,5 @@
 import { analyse, applyRepairs, needsRepair, openFindings, staleFindings } from './engine.js';
-import { filterIo, getJson as cloudGetJson, readCloudWorld } from './cloud-reader.js';
+import { filterIo, getJson as cloudGetJson, readCloudWorld, readPlans } from './cloud-reader.js';
 import { parseSnapshot } from './snapshot.js';
 import { parseIdMapping } from './idmap.js';
 import { readBoardConfig, readCloudBoardIssues } from './board-readers.js';
@@ -14,18 +14,31 @@ function pairing(idMappingCsv, filterType) {
   return { pairById: (sourceId) => ids.get(filterType, sourceId) };
 }
 
+async function planContext(requestJira) {
+  try {
+    return { plans: await readPlans(requestJira) };
+  } catch (error) {
+    return { plansNote: `Plans were not checked (${error.message}). Reading plans needs a Jira Premium site and the Administer Jira permission.` };
+  }
+}
+
 /** @param {{ snapshotText: string, requestJira: import('./cloud-reader.js').RequestJira, idMappingCsv?: string, filterType?: string }} input */
 export async function runAnalysis({ snapshotText, requestJira, idMappingCsv, filterType }) {
   const source = parseSnapshot(snapshotText);
   const { reports, notMigrated } = analyse(source, await readCloudWorld(requestJira), pairing(idMappingCsv, filterType));
+  const { plans, plansNote } = await planContext(requestJira);
   return {
     notMigrated,
+    plansNote,
     filters: reports.map((r) => ({
       filterId: r.filterId,
       name: r.name,
       original: r.original,
       proposed: r.proposed,
       canRepair: needsRepair(r),
+      plans: (plans ?? [])
+        .filter((p) => p.issueSources.some((s) => s.type === 'Filter' && s.value === r.filterId))
+        .map(({ id, name, status }) => ({ id, name, status })),
       open: openFindings(r).map(({ type, was, status, meant, resolvesNowTo }) => ({ type, was, status, meant, resolvesNowTo })),
     })),
   };

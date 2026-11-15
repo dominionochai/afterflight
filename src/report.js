@@ -5,9 +5,10 @@ export const CHECKED = [
 ];
 export const CHECKED_WITH_GAPS = [
   'Saved filters: versions and components are not exported from Data Center yet, so references to them are not judged',
+  'Advanced Roadmaps: Cloud plans that use a filter are listed beside it (Jira Premium only); plan contents are not compared with Data Center',
 ];
 export const NOT_CHECKED = [
-  'Board quick filters', 'Advanced Roadmaps plans', 'Board ranking field', 'Sprints',
+  'Board quick filters', 'Advanced Roadmaps plan issue sources versus Data Center (no supported Data Center route found)', 'Board ranking field', 'Sprints',
   'Permissions and issue security', 'Automation rules', 'Workflows', 'Dashboards and gadgets', 'Custom field contexts',
 ];
 
@@ -26,6 +27,7 @@ export function buildIntegrityReport({ generatedAt, analysis, boards = [], audit
     if (b.sourceTruncated) caveats.push(`Board "${b.name}": the Data Center export was truncated, so issues reported missing may be false alarms.`);
     if (b.issues && !b.issues.complete) caveats.push(`Board "${b.name}": some source issues have no ID mapping, so its unexpected-issue list is not reliable.`);
   }
+  if (analysis.plansNote) caveats.push(analysis.plansNote);
   if (analysis.notMigrated.length) caveats.push(`${analysis.notMigrated.length} filter(s) were not found in Cloud: ${analysis.notMigrated.map((f) => f.name).join(', ')}.`);
 
   return {

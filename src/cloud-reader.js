@@ -90,3 +90,26 @@ export function filterIo(requestJira) {
     },
   };
 }
+
+/**
+ * Advanced Roadmaps plans on Cloud. The list route already carries each plan's issue sources. The route is
+ * experimental, needs a Jira Premium site and the Administer Jira permission, and returns active plans only.
+ * @param {RequestJira} requestJira
+ * @returns {Promise<{ id: string, name: string, status: string, issueSources: { type: string, value: string }[] }[]>}
+ */
+export async function readPlans(requestJira) {
+  const plans = [];
+  for (let cursor = ''; ; ) {
+    const page = await getJson(requestJira, `/rest/api/3/plans/plan?maxResults=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+    for (const p of page.values) {
+      plans.push({
+        id: String(p.id),
+        name: p.name,
+        status: p.status,
+        issueSources: (p.issueSources ?? []).map((s) => ({ type: s.type, value: String(s.value) })),
+      });
+    }
+    cursor = page.nextPageCursor;
+    if (!cursor || page.isLast === true || page.last === true || page.values.length === 0) return plans;
+  }
+}

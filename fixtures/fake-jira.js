@@ -1,5 +1,5 @@
 // SYNTHETIC: an in-memory stand-in for the Jira Cloud REST API, used only by tests.
-export function fakeJira(world, { pageSize = 2, status = 200, denyPut = [], boards = {} } = {}) {
+export function fakeJira(world, { pageSize = 2, status = 200, denyPut = [], boards = {}, plans } = {}) {
   const filters = new Map(world.filters.map((f) => [f.id, { ...f }]));
   const writes = [];
   const body = (obj) => ({ ok: status < 400, status, json: async () => obj, text: async () => JSON.stringify(obj) });
@@ -31,6 +31,12 @@ export function fakeJira(world, { pageSize = 2, status = 200, denyPut = [], boar
       const next = from + pageSize;
       const issues = all.slice(from, next).map((i) => ({ id: i.id, key: `K-${i.id}`, fields: { status: { id: i.statusId } } }));
       return body({ issues, ...(next < all.length ? { nextPageToken: String(next) } : {}) });
+    }
+    if (url.pathname === '/rest/api/3/plans/plan') {
+      if (!plans) return { ok: false, status: 403, json: async () => ({}), text: async () => 'Premium edition required' };
+      const from = Number(url.searchParams.get('cursor') || 0);
+      const next = from + pageSize;
+      return body({ values: plans.slice(from, next), ...(next < plans.length ? { nextPageCursor: String(next) } : { isLast: true }) });
     }
     switch (url.pathname) {
       case '/rest/api/3/project/search': return body(page(e.project, startAt));
