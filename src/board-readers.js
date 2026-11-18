@@ -77,3 +77,37 @@ export async function readBoardFilterUsage(getJson) {
   }
   return { usage, skipped };
 }
+
+/**
+ * Every quick filter of a board. Cloud documents this read; no create, update or delete route was found.
+ * @param {GetJson} getJson @param {string} boardId
+ * @returns {Promise<{ id: string, name: string, jql: string }[]>}
+ */
+export async function readQuickFilters(getJson, boardId) {
+  const out = [];
+  for (let startAt = 0; ; ) {
+    const page = await getJson(`/rest/agile/1.0/board/${boardId}/quickfilter?startAt=${startAt}&maxResults=50`);
+    out.push(...page.values.map((q) => ({ id: String(q.id), name: q.name, jql: q.jql })));
+    if (page.isLast || page.values.length === 0) return out;
+    startAt += page.values.length;
+  }
+}
+
+/**
+ * Each board's own JQL: the Kanban sub-query from its configuration and its quick filters. A board whose
+ * configuration or quick filters cannot be read is reported in `skipped`, never dropped silently.
+ * @param {GetJson} getJson
+ */
+export async function readBoardQueries(getJson) {
+  const boards = [];
+  const skipped = [];
+  for (const board of await readBoards(getJson)) {
+    try {
+      const config = await readBoardConfig(getJson, board.id);
+      boards.push({ id: board.id, name: board.name, subQuery: config.subQuery?.query, quickFilters: await readQuickFilters(getJson, board.id) });
+    } catch (error) {
+      skipped.push({ id: board.id, message: error.message });
+    }
+  }
+  return { boards, skipped };
+}

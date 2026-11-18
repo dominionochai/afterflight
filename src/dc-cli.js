@@ -8,6 +8,7 @@ const USAGE = [
   '         [--id-mapping report.csv [--filter-type "<Entity Type for filters, default jira:filter>"]]',
   'The credential is read from AFTERFLIGHT_DC_AUTH as a full Authorization header value, e.g. "Bearer <token>".',
   'The base URL may instead come from AFTERFLIGHT_DC_URL. The export only issues GET requests.',
+  'Add --results off to skip reading each filter\'s issues (faster, but filter result comparison is then unavailable).',
 ].join('\n');
 
 function parseArgs(argv) {
@@ -30,7 +31,7 @@ export async function main(argv, env, log = console.log) {
   if (args['id-mapping']) {
     filterIds = parseIdMapping(await readFile(args['id-mapping'], 'utf8')).serverIds(args['filter-type'] ?? DEFAULT_ENTITY_TYPES.filter);
   }
-  const { snapshot, warnings } = await exportDcSnapshot({ getJson: makeDcGetJson({ baseUrl, authorization }), filterIds });
+  const { snapshot, warnings } = await exportDcSnapshot({ getJson: makeDcGetJson({ baseUrl, authorization }), filterIds, includeResults: args.results !== 'off' });
   await writeFile(args.out, JSON.stringify(snapshot, null, 2));
   warnings.forEach((w) => log(`WARNING ${w}`));
   log(`Wrote ${args.out}: ${snapshot.filters.length} filters, ${snapshot.boards.length} boards, ${snapshot.entities.project.length} projects.`);

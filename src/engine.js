@@ -6,7 +6,7 @@ import { extractReferences, rewrite } from './jql.js';
 /** @typedef {{ id: string, name: string, config: import('./board-parity.js').BoardConfig, issues: { id: string, statusId?: string }[] }} SourceBoard */
 /** @typedef {{ entities: Partial<Record<EntityType, Entity[]>>, filters: SavedFilter[], boards?: SourceBoard[] }} World */
 /** @typedef {'ok'|'stale'|'wrong-entity'|'missing'|'ambiguous'|'unknown-in-source'|'structure-changed'} Status */
-/** @typedef {{ type?: EntityType, was: string, now: string, status: Status, meant?: string, resolvesNowTo?: string, fix?: { start: number, end: number, text: string } }} Finding */
+/** @typedef {{ type?: EntityType, was: string, now: string, status: Status, meant?: string, resolvesNowTo?: string, targetName?: string, mappedCloudId?: string, fix?: { start: number, end: number, text: string } }} Finding */
 /** @typedef {{ filterId: string, name: string, sourceJql: string, original: string, proposed: string, findings: Finding[] }} FilterReport */
 
 const OPEN_STATUSES = new Set(['missing', 'ambiguous', 'structure-changed']);
@@ -65,6 +65,7 @@ function judge(was, now, source, cloud, mapId) {
     status: current ? 'wrong-entity' : 'stale',
     meant: meant.name,
     resolvesNowTo: current?.name,
+    targetName: target.name,
     fix: { start: now.start, end: now.end, text: render(was.type, target) },
   };
 }

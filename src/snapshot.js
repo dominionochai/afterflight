@@ -30,6 +30,13 @@ export function parseSnapshot(text) {
     ENTITY_TYPES.map((type) => [type, stringRecords(raw?.entities?.[type] ?? [], `entities.${type}`, ['id', 'name'])]),
   );
   const filters = stringRecords(raw?.filters, 'filters', ['id', 'name', 'ownerEmail', 'jql']);
+  filters.forEach((filter, i) => {
+    const r = filter.results;
+    if (r === undefined) return;
+    if (typeof r.total !== 'number' || (r.ids !== undefined && !Array.isArray(r.ids))) {
+      throw new Error(`Snapshot filters[${i}].results needs a numeric "total" and, if present, an "ids" array. Re-run the Data Center export script.`);
+    }
+  });
   const boards = stringRecords(raw?.boards ?? [], 'boards', ['id', 'name']);
   boards.forEach((board, i) => {
     if (typeof board.config?.filter?.id !== 'string' || !Array.isArray(board.config?.columnConfig?.columns)) {

@@ -113,3 +113,27 @@ export async function readPlans(requestJira) {
     if (!cursor || page.isLast === true || page.last === true || page.values.length === 0) return plans;
   }
 }
+
+/**
+ * Issue ids a JQL string returns on Cloud (enhanced search, ids only, token paging). Cloud requires a bounded query,
+ * so a filter with no restriction fails here and is reported by the caller. Results are limited to what the signed-in
+ * user may browse, and very recent changes may not be visible yet. The `cap` stops a huge result from being read whole.
+ * @param {RequestJira} requestJira @param {string} jql @param {number} [cap]
+ * @returns {Promise<{ ids: string[], capped: boolean }>}
+ */
+export async function searchIssueIds(requestJira, jql, cap = 5000) {
+  const ids = [];
+  for (let token; ; ) {
+    const res = await requestJira('/rest/api/3/search/jql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ jql, fields: ['id'], maxResults: Math.min(5000, cap - ids.length), ...(token ? { nextPageToken: token } : {}) }),
+    });
+    if (!res.ok) throw new Error(`POST /rest/api/3/search/jql failed with HTTP ${res.status}: ${await res.text()}`);
+    const page = await res.json();
+    ids.push(...page.issues.map((i) => String(i.id)));
+    token = page.nextPageToken;
+    if (!token || page.isLast === true) return { ids, capped: false };
+    if (ids.length >= cap) return { ids, capped: true };
+  }
+}

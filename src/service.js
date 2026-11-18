@@ -1,14 +1,34 @@
 import { analyse, applyRepairs, needsRepair, openFindings, staleFindings } from './engine.js';
-import { filterIo, getJson as cloudGetJson, readCloudWorld, readPlans } from './cloud-reader.js';
+import { filterIo, getJson as cloudGetJson, readCloudWorld, readPlans, searchIssueIds } from './cloud-reader.js';
+import { compareResults } from './result-parity.js';
 import { parseSnapshot } from './snapshot.js';
 import { parseIdMapping } from './idmap.js';
-import { readBoardConfig, readBoardFilterUsage, readCloudBoardIssues } from './board-readers.js';
+import { readBoardConfig, readBoardFilterUsage, readBoardQueries, readCloudBoardIssues } from './board-readers.js';
 import { compareBoardConfig, compareBoardIssues } from './board-parity.js';
 import { appliedRepairs } from './audit.js';
+import { compareChecks, parseJql } from './jql-check.js';
+import { explain } from './explain.js';
 import { DEFAULT_ENTITY_TYPES } from './entity-types.js';
 import { randomUUID } from 'node:crypto';
 
 /** Report-first lookups. `types` overrides DEFAULT_ENTITY_TYPES for any entity type whose Entity Type string differs. */
+/** Atlassian's parser on each report's original and proposed JQL. @returns {Promise<Map<string, ReturnType<typeof compareChecks>>>} */
+async function checkReports(requestJira, reports) {
+  if (reports.length === 0) return new Map();
+  const parsed = await parseJql(requestJira, [...new Set(reports.flatMap((r) => [r.original, r.proposed]))]);
+  return new Map(reports.map((r) => [r.filterId, compareChecks(parsed.get(r.original), parsed.get(r.proposed))]));
+}
+
+/** Names of applied filters whose live JQL is not what we wrote, or that Atlassian's parser now objects to. */
+async function verifyLive(requestJira, io, applied) {
+  if (applied.length === 0) return [];
+  const live = await Promise.all(applied.map((r) => io.readJql(r.filterId)));
+  const parsed = await parseJql(requestJira, [...new Set([...applied.map((r) => r.original), ...live])]);
+  return applied
+    .filter((r, i) => live[i] !== r.proposed || compareChecks(parsed.get(r.original), parsed.get(live[i])).introduced.length > 0)
+    .map((r) => r.name);
+}
+
 function pairing(idMappingCsv, types) {
   if (!idMappingCsv) return {};
   const ids = parseIdMapping(idMappingCsv);
@@ -44,16 +64,26 @@ export async function runAnalysis({ snapshotText, requestJira, idMappingCsv, typ
   const { reports, notMigrated } = analyse(source, await readCloudWorld(requestJira), pairing(idMappingCsv, types));
   const { plans, plansNote } = await planContext(requestJira);
   const { usage, boardsNote } = await boardContext(requestJira);
+  let checks;
+  let checkNote;
+  try {
+    checks = await checkReports(requestJira, reports.filter(needsRepair));
+  } catch (error) {
+    checkNote = `Atlassian's JQL check did not run (${error.message}), so proposed repairs are not independently checked yet.`;
+  }
   return {
     notMigrated,
     plansNote,
     boardsNote,
+    checkNote,
     filters: reports.map((r) => ({
       filterId: r.filterId,
       name: r.name,
       original: r.original,
       proposed: r.proposed,
       canRepair: needsRepair(r),
+      check: checks?.get(r.filterId),
+      why: r.findings.map(explain).filter(Boolean),
       boards: (usage?.get(r.filterId) ?? []).map(({ id, name }) => ({ id, name })),
       plans: (plans ?? [])
         .filter((p) => p.issueSources.some((s) => s.type === 'Filter' && s.value === r.filterId))
@@ -117,16 +147,47 @@ export async function runApply({ snapshotText, filterIds, requestJira, audit, ac
   const { reports } = analyse(source, await readCloudWorld(requestJira), options);
   const chosen = reports.filter((r) => needsRepair(r) && filterIds.includes(r.filterId));
   const ctx = { runId, actor, action: 'repair' };
-  const result = await applyRepairs(chosen, auditedIo(filterIo(requestJira), audit, ctx, chosen));
-  const auditErrors = await recordLeftovers(audit, ctx, chosen, result);
+
+  let checks;
+  let checkError;
+  try {
+    checks = await checkReports(requestJira, chosen);
+  } catch (error) {
+    checkError = error.message;
+  }
+  const allowed = [];
+  const blocked = [];
+  for (const r of chosen) {
+    const check = checks?.get(r.filterId);
+    const message = !check ? `Atlassian's JQL check could not run (${checkError}), so nothing was written.`
+      : check.introduced.length ? `Atlassian's JQL check found new problems in the proposed query, so nothing was written: ${check.introduced.join(' | ')}`
+        : undefined;
+    if (message) blocked.push({ filterId: r.filterId, name: r.name, message });
+    else allowed.push(r);
+  }
+
+  const io = filterIo(requestJira);
+  const result = await applyRepairs(allowed, auditedIo(io, audit, ctx, allowed));
+  const failed = [...result.failed, ...blocked];
+  const auditErrors = await recordLeftovers(audit, ctx, chosen, { skipped: result.skipped, failed });
+
+  let unverified = [];
+  let verifyNote;
+  try {
+    unverified = await verifyLive(requestJira, io, allowed.filter((r) => result.done.includes(r.filterId)));
+  } catch (error) {
+    verifyNote = `Live verification did not run (${error.message}).`;
+  }
   const chosenIds = new Set(chosen.map((r) => r.filterId));
   const after = analyse(source, await readCloudWorld(requestJira), options).reports;
   return {
     runId,
     done: result.done,
     skipped: result.skipped,
-    failed: result.failed,
+    failed,
     auditErrors,
+    unverified,
+    verifyNote,
     ignored: filterIds.filter((id) => !chosenIds.has(id)),
     stillStale: after.filter((r) => chosenIds.has(r.filterId) && staleFindings(r).length > 0).map((r) => r.name),
   };
@@ -205,4 +266,63 @@ export async function runBoardParity({ snapshotText, idMappingCsv, types, reques
     });
   }
   return results;
+}
+
+/**
+ * Read-only: runs every Cloud quick filter and Kanban sub-query through Atlassian's JQL parser and lists the ones with
+ * problems. With no Data Center source for these, it can only see references that no longer resolve, not ones that
+ * now mean something else. Cloud has no documented write route for quick filters, so every fix is manual.
+ * @param {{ requestJira: import('./cloud-reader.js').RequestJira }} input
+ */
+export async function runBoardQueryCheck({ requestJira }) {
+  const { boards, skipped } = await readBoardQueries((path) => cloudGetJson(requestJira, path));
+  const items = boards.flatMap((b) => [
+    ...(b.subQuery ? [{ kind: 'sub-query', boardId: b.id, boardName: b.name, name: 'Kanban sub-query', jql: b.subQuery }] : []),
+    ...b.quickFilters.filter((q) => q.jql).map((q) => ({ kind: 'quick-filter', boardId: b.id, boardName: b.name, name: q.name, jql: q.jql })),
+  ]);
+  const parsed = items.length ? await parseJql(requestJira, [...new Set(items.map((i) => i.jql))]) : new Map();
+  const findings = items
+    .map((i) => ({ ...i, problems: [...parsed.get(i.jql).errors, ...parsed.get(i.jql).warnings] }))
+    .filter((i) => i.problems.length > 0);
+  return {
+    checked: items.length,
+    findings,
+    note: skipped.length ? `Could not read ${skipped.length} board(s) (${skipped.map((s) => s.id).join(', ')}), so their quick filters were not checked.` : undefined,
+  };
+}
+
+/**
+ * For every paired filter that has an exported Data Center result: what Cloud returns for the filter as migrated, and what it
+ * would return after the proposed repair. The repaired query is searched as text, so nothing is written to preview it.
+ * Both sides only see what their signed-in user may browse, so run the export and the app as administrators.
+ * @param {{ snapshotText: string, requestJira: import('./cloud-reader.js').RequestJira, idMappingCsv?: string, types?: Partial<Record<string, string>> }} input
+ */
+export async function runResultParity({ snapshotText, requestJira, idMappingCsv, types }) {
+  const source = parseSnapshot(snapshotText);
+  const options = pairing(idMappingCsv, types);
+  const names = { ...DEFAULT_ENTITY_TYPES, ...types };
+  const ids = idMappingCsv ? parseIdMapping(idMappingCsv) : undefined;
+  const mapIssue = ids ? (id) => ids.get(names.issue, id) : undefined;
+  const { reports } = analyse(source, await readCloudWorld(requestJira), options);
+  const resultsOf = new Map(source.filters.map((f) => [f.jql, f.results]));
+  const out = [];
+  for (const r of reports) {
+    const sourceResult = resultsOf.get(r.sourceJql);
+    if (!sourceResult) continue;
+    const check = async (jql) => {
+      try {
+        return compareResults(sourceResult, await searchIssueIds(requestJira, jql), mapIssue);
+      } catch (error) {
+        return { status: 'unknown', basis: 'counts', sourceTotal: sourceResult.total, reason: error.message };
+      }
+    };
+    out.push({
+      filterId: r.filterId,
+      name: r.name,
+      sourceTotal: sourceResult.total,
+      asMigrated: await check(r.original),
+      ...(needsRepair(r) ? { afterRepair: await check(r.proposed) } : {}),
+    });
+  }
+  return out;
 }

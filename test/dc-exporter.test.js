@@ -23,6 +23,7 @@ const ROUTES = {
   '/rest/api/2/filter/555': { id: '555', name: 'Extra', jql: 'status = Done', owner: { name: 'x' } },
   '/rest/api/2/user?username=jsmith': { name: 'jsmith', displayName: 'John Smith', emailAddress: 'john@example.com' },
 };
+const SEARCH = { 'project = BIL AND assignee = jsmith': [1, 2, 3], 'status = Done': [] };
 const BOARD_ISSUES = { 7: { total: 3, all: [1, 2, 3] }, 8: { total: 5, all: [4, 5] } };
 
 function startFakeDc() {
@@ -32,6 +33,12 @@ function startFakeDc() {
     const url = new URL(req.url, 'http://x.invalid');
     const issuesFor = url.pathname.match(/^\/rest\/agile\/1\.0\/board\/(\d+)\/issue$/);
     let payload = ROUTES[req.url] ?? ROUTES[url.pathname];
+    if (url.pathname === '/rest/api/2/search') {
+      const all = SEARCH[url.searchParams.get('jql')] ?? [];
+      const max = Number(url.searchParams.get('maxResults'));
+      const startAt = Number(url.searchParams.get('startAt') ?? 0);
+      payload = { startAt, maxResults: max, total: all.length, issues: all.slice(startAt, startAt + max).map((id) => ({ id: String(id) })) };
+    }
     if (issuesFor) {
       const { total, all } = BOARD_ISSUES[issuesFor[1]];
       const startAt = Number(url.searchParams.get('startAt'));
@@ -54,6 +61,7 @@ test('export is GET-only, sends the credential, validates, fetches filters by id
     assert.deepEqual(snapshot.entities.user, [{ id: 'jsmith', name: 'John Smith', email: 'john@example.com' }]);
     assert.equal(snapshot.filters[0].ownerEmail, 'john@example.com');
     assert.equal(snapshot.filters[1].ownerEmail, '');
+    assert.deepEqual(snapshot.filters.map((f) => f.results), [{ total: 3, ids: ['1', '2', '3'] }, { total: 0, ids: [] }]);
     assert.deepEqual(snapshot.boards.map((b) => [b.id, b.issues.length, b.issueTotal]), [['7', 3, 3], ['8', 2, 5]]);
     assert.equal(warnings.length, 2);
     assert.match(warnings.join('\n'), /filter 101: GET \/rest\/api\/2\/filter\/101 failed with HTTP 404/);
@@ -100,6 +108,19 @@ test('CLI uses the published filter Entity Type when none is given', async () =>
     await writeFile(report, 'Entity Type,Server ID,Cloud ID\njira:filter,555,9555\n');
     await main(['--base-url', dc.baseUrl, '--out', out, '--id-mapping', report], { AFTERFLIGHT_DC_AUTH: 'Bearer t' }, () => {});
     assert.deepEqual(JSON.parse(await readFile(out, 'utf8')).filters.map((f) => f.id), ['555', '100']);
+  } finally {
+    dc.server.close();
+  }
+});
+
+test('results can be skipped, and a huge filter is exported by count only', async () => {
+  const dc = await startFakeDc();
+  try {
+    const getJson = makeDcGetJson({ baseUrl: dc.baseUrl, authorization: 'Bearer t' });
+    const skipped = await exportDcSnapshot({ getJson, filterIds: ['100'], includeResults: false });
+    assert.equal(skipped.snapshot.filters[0].results, undefined);
+    const small = await exportDcSnapshot({ getJson, filterIds: ['100'], resultIdCap: 2 });
+    assert.deepEqual(small.snapshot.filters[0].results, { total: 3 });
   } finally {
     dc.server.close();
   }

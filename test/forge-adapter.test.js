@@ -40,7 +40,7 @@ test('runApply writes only chosen repairable filters, keeps names, verifies on l
   const jira = fakeJira(cloud);
   const input = { snapshotText: JSON.stringify(source), requestJira: jira.request, audit: newAudit(), runId: 'run-1' };
   const first = await runApply({ ...input, filterIds: ['20001', '20003', '99999'] });
-  assert.deepEqual(first, { runId: 'run-1', done: ['20001'], skipped: [], failed: [], auditErrors: [], ignored: ['20003', '99999'], stillStale: [] });
+  assert.deepEqual(first, { runId: 'run-1', done: ['20001'], skipped: [], failed: [], auditErrors: [], unverified: [], verifyNote: undefined, ignored: ['20003', '99999'], stillStale: [] });
   assert.deepEqual(jira.writes, [{ id: '20001', name: 'Billing open', jql: 'project = 10300 AND status = 10002' }]);
   assert.equal(jira.filters.get('20003').jql, 'status = "In Review"');
   const second = await runApply({ ...input, filterIds: ['20001'] });

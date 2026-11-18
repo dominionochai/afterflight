@@ -95,7 +95,7 @@ test('integrity report states coverage, counts, caveats and the audit trail', as
   assert.equal(report.summary.filters.notMigrated, 1);
   assert.equal(report.caveats.length, 5);
   assert.ok(report.caveats.some((c) => c.startsWith('Plans were not checked')));
-  assert.ok(report.coverage.notChecked.includes('Board quick filters') && report.coverage.notChecked.some((item) => item.startsWith('Advanced Roadmaps plan issue sources')));
+  assert.ok(report.coverage.notChecked.includes('Sprints') && report.coverage.notChecked.some((item) => item.startsWith('Advanced Roadmaps plan issue sources')));
   const md = renderMarkdown(report);
   for (const heading of ['# Afterflight migration integrity report', '## Coverage', '## Caveats', '## Audit trail']) assert.ok(md.includes(heading), heading);
   assert.ok(NOT_CHECKED.every((item) => md.includes(item)));

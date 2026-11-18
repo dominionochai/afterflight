@@ -4,6 +4,20 @@ import { parseSnapshot } from './snapshot.js';
 
 const plain = ({ id, name }) => ({ id: String(id), name });
 
+async function readDcResult(getJson, jql, cap) {
+  const q = encodeURIComponent(jql);
+  const { total } = await getJson(`/rest/api/2/search?jql=${q}&fields=id&maxResults=0`);
+  if (typeof total !== 'number') throw new Error('the search response had no numeric total');
+  if (total > cap) return { total };
+  const ids = [];
+  while (ids.length < total) {
+    const page = await getJson(`/rest/api/2/search?jql=${q}&fields=id&startAt=${ids.length}&maxResults=100`);
+    if (page.issues.length === 0) break;
+    ids.push(...page.issues.map((i) => String(i.id)));
+  }
+  return ids.length === total ? { total, ids } : { total };
+}
+
 /**
  * Read-only by construction: the only thing it can do is GET. Authorization is the full header value
  * (for example "Bearer <token>" or "Basic <base64>") so no credential scheme is assumed.
@@ -25,9 +39,11 @@ export function makeDcGetJson({ baseUrl, authorization, fetchImpl = fetch }) {
  * Builds the snapshot Afterflight compares against Cloud. There is no list-all-filters route in the DC docs
  * reviewed, so filters come from `filterIds` (the ID Mapping Report) plus every board's filter. A missing
  * optional item becomes a warning; the required entity lists failing aborts the export.
- * @param {{ getJson: import('./board-readers.js').GetJson, filterIds?: string[] }} input
+ * Each filter's result is read with its own JQL: the count always (fields=id&maxResults=0 returns the total), the issue ids only
+ * when the total is within `resultIdCap`, so a huge filter is compared by count.
+ * @param {{ getJson: import('./board-readers.js').GetJson, filterIds?: string[], includeResults?: boolean, resultIdCap?: number }} input
  */
-export async function exportDcSnapshot({ getJson, filterIds = [] }) {
+export async function exportDcSnapshot({ getJson, filterIds = [], includeResults = true, resultIdCap = 2000 }) {
   const warnings = [];
   const attempt = async (label, run) => {
     try {
@@ -59,7 +75,12 @@ export async function exportDcSnapshot({ getJson, filterIds = [] }) {
   const filters = [];
   for (const id of wanted) {
     const filter = await attempt(`filter ${id}`, () => getJson(`/rest/api/2/filter/${encodeURIComponent(id)}`));
-    if (filter) filters.push({ id: String(filter.id), name: filter.name, ownerEmail: filter.owner?.emailAddress ?? '', jql: filter.jql });
+    if (!filter) continue;
+    const entry = { id: String(filter.id), name: filter.name, ownerEmail: filter.owner?.emailAddress ?? '', jql: filter.jql };
+    if (includeResults) {
+      entry.results = await attempt(`filter ${id} results`, () => readDcResult(getJson, filter.jql, resultIdCap));
+    }
+    filters.push(entry);
   }
 
   const usernames = [...new Set(filters.flatMap((f) => extractReferences(f.jql)).filter((r) => r.type === 'user').map((r) => r.literal))];
