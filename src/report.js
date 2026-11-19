@@ -2,13 +2,13 @@
 export const CHECKED = [
   'Saved filters: references to projects, statuses, issue types, priorities, users, filters and custom fields',
   'Filter results: each filter\'s Data Center result compared with Cloud as migrated and as it would be after repair (issue by issue where ids were exported, otherwise by count; both sides see only what their user may browse)',
+  'Boards that sit on a filter are listed beside it, read from each board configuration on Cloud',
   'Proposed repairs: checked with Atlassian\'s own JQL parser before writing and again on the live filter afterwards',
   'Boards: filter reference, column-to-status mapping, estimation field, and the set of issues each board shows',
 ];
 export const CHECKED_WITH_GAPS = [
   'Saved filters: versions and components are not exported from Data Center yet, so references to them are not judged',
   'Board quick filters and Kanban sub-queries: read on Cloud and run through Atlassian\'s parser (references that no longer resolve only; not compared with Data Center, and fixes are manual because no write route was found)',
-  'Boards that sit on a filter are listed beside it, read from each board configuration on Cloud',
   'Advanced Roadmaps: Cloud plans that use a filter are listed beside it (Jira Premium only); plan contents are not compared with Data Center',
 ];
 export const NOT_CHECKED = [
@@ -34,6 +34,7 @@ export function buildIntegrityReport({ generatedAt, analysis, boards = [], audit
     if (b.issues && !b.issues.complete) caveats.push(`Board "${b.name}": some source issues have no ID mapping, so its unexpected-issue list is not reliable.`);
   }
   if (analysis.checkNote) caveats.push(analysis.checkNote);
+  for (const a of analysis.ambiguousPairs ?? []) caveats.push(`Filter "${a.name}" (${a.id}) was not analysed: ${a.reason}.`);
   if (analysis.plansNote) caveats.push(analysis.plansNote);
   if (analysis.boardsNote) caveats.push(analysis.boardsNote);
   if (queryCheck?.note) caveats.push(queryCheck.note);
@@ -47,6 +48,7 @@ export function buildIntegrityReport({ generatedAt, analysis, boards = [], audit
         repairable: count(analysis.filters, (f) => f.canRepair),
         needAttention: count(analysis.filters, (f) => f.open.length > 0),
         notMigrated: analysis.notMigrated.length,
+        unpaired: (analysis.ambiguousPairs ?? []).length,
       },
       boards: {
         total: boards.length,
@@ -78,19 +80,19 @@ const bullets = (items) => (items.length ? items.map((i) => `- ${i}`).join('\n')
 /** @param {ReturnType<typeof buildIntegrityReport>} r */
 export function renderMarkdown(r) {
   const { filters: f, boards: b, repairs: p } = r.summary;
-  const filterLines = r.filters.map((x) => `- **${x.name}** (${x.filterId}): ${x.canRepair ? `repairable, proposed \`${x.proposed}\`` : 'no repair proposed'}${x.open.length ? `; needs attention: ${x.open.map((o) => `${o.type} "${o.was}" ${o.status}`).join(', ')}` : ''}${(x.why ?? []).map((w) => `\n  - ${w}`).join('')}`);
+  const filterLines = r.filters.map((x) => `**${x.name}** (${x.filterId}): ${x.canRepair ? `repairable, proposed \`${x.proposed}\`` : 'no repair proposed'}${x.open.length ? `; needs attention: ${x.open.map((o) => `${o.type} "${o.was}" ${o.status}`).join(', ')}` : ''}${(x.why ?? []).map((w) => `\n  - ${w}`).join('')}`);
   const boardLines = r.boards.map((x) => (x.status === 'compared'
-    ? `- **${x.name}** (${x.boardId} -> ${x.cloudBoardId}): ${x.configFindings.length} config finding(s), ${x.issues.missing.length} missing, ${x.issues.unexpected.length} unexpected, ${x.issues.unmapped.length} unmapped issue(s)`
-    : `- **${x.name}** (${x.boardId}): ${x.status}`));
-  const queryLines = (r.queryCheck?.findings ?? []).map((q) => `- **${q.boardName}** (${q.boardId}) ${q.kind} "${q.name}": \`${q.jql}\`\n  - ${q.problems.join('\n  - ')}\n  - Fix by hand: Cloud has no write route for this.`);
+    ? `**${x.name}** (${x.boardId} -> ${x.cloudBoardId}): ${x.configFindings.length} config finding(s), ${x.issues.missing.length} missing, ${x.issues.unexpected.length} unexpected, ${x.issues.unmapped.length} unmapped issue(s)`
+    : `**${x.name}** (${x.boardId}): ${x.status}`));
+  const queryLines = (r.queryCheck?.findings ?? []).map((q) => `**${q.boardName}** (${q.boardId}) ${q.kind} "${q.name}": \`${q.jql}\`\n  - ${q.problems.join('\n  - ')}\n  - Fix by hand: Cloud has no write route for this.`);
   const describe = (c) => (c.status === 'unknown' ? `unknown (${c.reason})` : `${c.status}, ${c.cloudTotal} in Cloud (${c.basis})`);
-  const parityLines = r.parity.map((p) => `- **${p.name}**: ${p.sourceTotal} in Data Center; as migrated ${describe(p.asMigrated)}${p.afterRepair ? `; after repair ${describe(p.afterRepair)}` : ''}`);
-  const auditLines = r.audit.map((e) => `- ${e.at} ${e.actor} ${e.action} ${e.outcome} filter ${e.filterId} "${e.name}" (run ${e.runId})${e.message ? `: ${e.message}` : ''}`);
+  const parityLines = r.parity.map((p) => `**${p.name}**: ${p.sourceTotal} in Data Center; as migrated ${describe(p.asMigrated)}${p.afterRepair ? `; after repair ${describe(p.afterRepair)}` : ''}`);
+  const auditLines = r.audit.map((e) => `${e.at} ${e.actor} ${e.action} ${e.outcome} filter ${e.filterId} "${e.name}" (run ${e.runId})${e.message ? `: ${e.message}` : ''}`);
   return [
     '# Afterflight migration integrity report',
     `Generated ${r.generatedAt}`,
     '## Summary',
-    `- Filters: ${f.total} analysed, ${f.repairable} repairable, ${f.needAttention} need attention, ${f.notMigrated} not migrated`,
+    `- Filters: ${f.total} analysed, ${f.repairable} repairable, ${f.needAttention} need attention, ${f.notMigrated} not migrated, ${f.unpaired} could not be paired without guessing`,
     `- Boards: ${b.total} listed, ${b.compared} compared, ${b.withConfigFindings} with config findings, ${b.withMissingIssues} with missing issues`,
     `- Filter results: ${r.summary.results.compared} compared, ${r.summary.results.matchAsMigrated} match as migrated, ${r.summary.results.matchAfterRepair} match after repair`,
     `- Board quick filters and sub-queries: ${r.summary.boardQueries.checked} checked, ${r.summary.boardQueries.withProblems} with problems`,

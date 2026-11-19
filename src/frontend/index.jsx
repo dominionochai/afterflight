@@ -116,6 +116,7 @@ const App = () => {
           <Stack space="space.150">
             <Button appearance="primary" onClick={analyse}>Analyse filters</Button>
             {analysis?.checkNote && <SectionMessage appearance="warning" title="Atlassian check did not run"><Text>{analysis.checkNote}</Text></SectionMessage>}
+            {analysis?.ambiguousPairs?.length > 0 && <SectionMessage appearance="warning" title="Filters not analysed: pairing is ambiguous"><Text>{analysis.ambiguousPairs.map((a) => `${a.name}: ${a.reason}`).join('; ')}</Text></SectionMessage>}
             {analysis?.boardsNote && <SectionMessage appearance="information" title="Boards not fully checked"><Text>{analysis.boardsNote}</Text></SectionMessage>}
             {analysis?.plansNote && <SectionMessage appearance="information" title="Plans not checked"><Text>{analysis.plansNote}</Text></SectionMessage>}
             {analysis?.notMigrated.length > 0 && (

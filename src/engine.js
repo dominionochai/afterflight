@@ -86,24 +86,41 @@ export function diagnoseQuery(sourceJql, cloudJql, source, cloud, mapId) {
  * `mapId(type, serverId)` gives the report's Cloud ID for any entity type.
  * @param {World} source @param {World} cloud
  * @param {{ pairById?: (sourceId: string) => string | undefined, mapId?: (type: string, serverId: string) => string | undefined }} [options]
- * @returns {{ reports: FilterReport[], notMigrated: { id: string, name: string }[] }}
+ * A filter that cannot be paired without guessing is reported in `ambiguousPairs` and never analysed.
+ * @returns {{ reports: FilterReport[], notMigrated: { id: string, name: string }[], ambiguousPairs: { id: string, name: string, candidates: string[], reason: string }[] }}
  */
 export function analyse(source, cloud, { pairById, mapId } = {}) {
   const slot = (f) => `${f.ownerEmail}|${f.name}`.toLowerCase();
-  const migrated = new Map(cloud.filters.map((f) => [slot(f), f]));
+  const groups = (list) => list.reduce((m, f) => m.set(slot(f), [...(m.get(slot(f)) ?? []), f]), new Map());
+  const cloudBySlot = groups(cloud.filters);
+  const sourceBySlot = groups(source.filters);
   const byCloudId = new Map(cloud.filters.map((f) => [f.id, f]));
+  const claimed = new Set();
   const reports = [];
   const notMigrated = [];
+  const ambiguousPairs = [];
   for (const src of source.filters) {
-    const dst = byCloudId.get(pairById?.(src.id)) ?? migrated.get(slot(src));
+    const reported = pairById?.(src.id);
+    const candidates = cloudBySlot.get(slot(src)) ?? [];
+    const twins = sourceBySlot.get(slot(src)).length;
+    if (reported === undefined && candidates.length > 0 && (candidates.length > 1 || twins > 1)) {
+      ambiguousPairs.push({ id: src.id, name: src.name, candidates: candidates.map((c) => c.id), reason: `${twins} source and ${candidates.length} Cloud filter(s) share this owner and name; supply the ID Mapping Report to pair them` });
+      continue;
+    }
+    const dst = reported === undefined ? candidates[0] : byCloudId.get(reported);
     if (!dst) {
       notMigrated.push({ id: src.id, name: src.name });
       continue;
     }
+    if (claimed.has(dst.id)) {
+      ambiguousPairs.push({ id: src.id, name: src.name, candidates: [dst.id], reason: `Cloud filter ${dst.id} is already paired with another source filter` });
+      continue;
+    }
+    claimed.add(dst.id);
     const { findings, proposed } = diagnoseQuery(src.jql, dst.jql, source, cloud, mapId);
     reports.push({ filterId: dst.id, name: dst.name, sourceJql: src.jql, original: dst.jql, proposed, findings });
   }
-  return { reports, notMigrated };
+  return { reports, notMigrated, ambiguousPairs };
 }
 
 export const needsRepair = (report) => report.proposed !== report.original;

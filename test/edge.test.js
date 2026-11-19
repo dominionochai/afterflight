@@ -74,3 +74,32 @@ test('an ID mapping report with a byte-order mark still has its header skipped',
   assert.equal(ids.size, 1);
   assert.equal(ids.get('t:i', '1'), '2');
 });
+
+test('filters sharing an owner and name are never paired by guessing', () => {
+  const twin = (id, jql) => ({ id, ownerEmail: owner, name: 'Dup', jql });
+  const src = { entities: SRC, filters: [twin('1', 'status = 3'), twin('2', 'status = 4')] };
+  const cld = { entities: CLOUD, filters: [twin('a', 'status = 3'), twin('b', 'status = 4')] };
+  const { reports, ambiguousPairs, notMigrated } = analyse(src, cld);
+  assert.equal(reports.length, 0);
+  assert.equal(notMigrated.length, 0);
+  assert.deepEqual(ambiguousPairs.map((a) => [a.id, a.candidates]), [['1', ['a', 'b']], ['2', ['a', 'b']]]);
+  assert.match(ambiguousPairs[0].reason, /supply the ID Mapping Report/);
+});
+
+test('the ID Mapping Report resolves duplicates, and one Cloud filter is never claimed twice', () => {
+  const twin = (id, jql) => ({ id, ownerEmail: owner, name: 'Dup', jql });
+  const src = { entities: SRC, filters: [twin('1', 'status = 3'), twin('2', 'status = 4')] };
+  const cld = { entities: CLOUD, filters: [twin('a', 'status = 3'), twin('b', 'status = 4')] };
+  const paired = analyse(src, cld, { pairById: (id) => ({ 1: 'a', 2: 'b' })[id] });
+  assert.deepEqual(paired.reports.map((r) => [r.filterId, r.proposed]), [['a', 'status = 10006'], ['b', 'status = 10007']]);
+  const clash = analyse(src, cld, { pairById: () => 'a' });
+  assert.deepEqual(clash.reports.map((r) => r.filterId), ['a']);
+  assert.match(clash.ambiguousPairs[0].reason, /already paired with another source filter/);
+});
+
+test('a report row pointing at a missing Cloud filter is not-migrated, never a name-based guess', () => {
+  const f = { id: '1', ownerEmail: owner, name: 'Same', jql: 'status = 3' };
+  const { reports, notMigrated } = analyse({ entities: SRC, filters: [f] }, { entities: CLOUD, filters: [{ ...f, id: 'z' }] }, { pairById: () => 'gone' });
+  assert.equal(reports.length, 0);
+  assert.deepEqual(notMigrated.map((n) => n.id), ['1']);
+});

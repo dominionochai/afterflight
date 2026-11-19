@@ -102,3 +102,14 @@ test('integrity report states coverage, counts, caveats and the audit trail', as
   assert.match(md, /truncated, so issues reported missing may be false alarms/);
   assert.match(md, /run run-4/);
 });
+
+test('the Markdown report has no doubled bullets and puts blast-radius coverage under "checked"', async () => {
+  const jira = fakeJira(cloud);
+  const analysis = await runAnalysis({ snapshotText, requestJira: jira.request });
+  const report = buildIntegrityReport({ generatedAt: 'x', analysis, boards: [{ boardId: '8', name: 'Orphan', status: 'board-not-mapped' }] });
+  const md = renderMarkdown(report);
+  assert.ok(!/^- - /m.test(md), 'doubled bullet found');
+  assert.ok(/^- \*\*Billing open\*\*/m.test(md));
+  assert.ok(report.coverage.checked.some((c) => c.startsWith('Boards that sit on a filter')));
+  assert.ok(!report.coverage.checkedWithGaps.some((c) => c.startsWith('Boards that sit on a filter')));
+});

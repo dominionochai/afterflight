@@ -1,17 +1,26 @@
 import { analyse, applyRepairs, needsRepair, openFindings, staleFindings } from './engine.js';
-import { filterIo, getJson as cloudGetJson, readCloudWorld, readPlans, searchIssueIds } from './cloud-reader.js';
+import { ALL_ENTITY_TYPES, filterIo, getJson as cloudGetJson, readCloudWorld, readPlans, searchIssueIds } from './cloud-reader.js';
 import { compareResults } from './result-parity.js';
 import { parseSnapshot } from './snapshot.js';
 import { parseIdMapping } from './idmap.js';
 import { readBoardConfig, readBoardFilterUsage, readBoardQueries, readCloudBoardIssues } from './board-readers.js';
 import { compareBoardConfig, compareBoardIssues } from './board-parity.js';
 import { appliedRepairs } from './audit.js';
+import { mapLimit } from './concurrency.js';
+import { extractReferences } from './jql.js';
 import { compareChecks, parseJql } from './jql-check.js';
 import { explain } from './explain.js';
 import { DEFAULT_ENTITY_TYPES } from './entity-types.js';
 import { randomUUID } from 'node:crypto';
 
 /** Report-first lookups. `types` overrides DEFAULT_ENTITY_TYPES for any entity type whose Entity Type string differs. */
+/** Reads from Cloud only the entity types this snapshot's queries and boards can refer to. */
+function loadCloud(requestJira, source) {
+  const referenced = new Set(source.filters.flatMap((f) => extractReferences(f.jql).map((r) => r.type)));
+  if (source.boards?.length) ['status', 'field'].forEach((t) => referenced.add(t));
+  return readCloudWorld(requestJira, ALL_ENTITY_TYPES.filter((t) => referenced.has(t)));
+}
+
 /** Atlassian's parser on each report's original and proposed JQL. @returns {Promise<Map<string, ReturnType<typeof compareChecks>>>} */
 async function checkReports(requestJira, reports) {
   if (reports.length === 0) return new Map();
@@ -22,7 +31,7 @@ async function checkReports(requestJira, reports) {
 /** Names of applied filters whose live JQL is not what we wrote, or that Atlassian's parser now objects to. */
 async function verifyLive(requestJira, io, applied) {
   if (applied.length === 0) return [];
-  const live = await Promise.all(applied.map((r) => io.readJql(r.filterId)));
+  const live = await mapLimit(applied, 5, (r) => io.readJql(r.filterId));
   const parsed = await parseJql(requestJira, [...new Set([...applied.map((r) => r.original), ...live])]);
   return applied
     .filter((r, i) => live[i] !== r.proposed || compareChecks(parsed.get(r.original), parsed.get(live[i])).introduced.length > 0)
@@ -61,7 +70,7 @@ async function boardContext(requestJira) {
 /** @param {{ snapshotText: string, requestJira: import('./cloud-reader.js').RequestJira, idMappingCsv?: string, types?: Partial<Record<string, string>> }} input */
 export async function runAnalysis({ snapshotText, requestJira, idMappingCsv, types }) {
   const source = parseSnapshot(snapshotText);
-  const { reports, notMigrated } = analyse(source, await readCloudWorld(requestJira), pairing(idMappingCsv, types));
+  const { reports, notMigrated, ambiguousPairs } = analyse(source, await loadCloud(requestJira, source), pairing(idMappingCsv, types));
   const { plans, plansNote } = await planContext(requestJira);
   const { usage, boardsNote } = await boardContext(requestJira);
   let checks;
@@ -73,6 +82,7 @@ export async function runAnalysis({ snapshotText, requestJira, idMappingCsv, typ
   }
   return {
     notMigrated,
+    ambiguousPairs,
     plansNote,
     boardsNote,
     checkNote,
@@ -144,7 +154,7 @@ export async function runApply({ snapshotText, filterIds, requestJira, audit, ac
   requireAudit(audit);
   const source = parseSnapshot(snapshotText);
   const options = pairing(idMappingCsv, types);
-  const { reports } = analyse(source, await readCloudWorld(requestJira), options);
+  const { reports } = analyse(source, await loadCloud(requestJira, source), options);
   const chosen = reports.filter((r) => needsRepair(r) && filterIds.includes(r.filterId));
   const ctx = { runId, actor, action: 'repair' };
 
@@ -179,7 +189,7 @@ export async function runApply({ snapshotText, filterIds, requestJira, audit, ac
     verifyNote = `Live verification did not run (${error.message}).`;
   }
   const chosenIds = new Set(chosen.map((r) => r.filterId));
-  const after = analyse(source, await readCloudWorld(requestJira), options).reports;
+  const after = analyse(source, await loadCloud(requestJira, source), options).reports;
   return {
     runId,
     done: result.done,
@@ -233,7 +243,7 @@ export async function runBoardParity({ snapshotText, idMappingCsv, types, reques
   const names = { ...DEFAULT_ENTITY_TYPES, ...types };
   const source = parseSnapshot(snapshotText);
   const ids = parseIdMapping(idMappingCsv);
-  const cloud = await readCloudWorld(requestJira);
+  const cloud = await loadCloud(requestJira, source);
   const getJson = (path) => cloudGetJson(requestJira, path);
   const statusByName = nameMapper(source, cloud, 'status');
   const fieldByName = nameMapper(source, cloud, 'field');
@@ -303,7 +313,7 @@ export async function runResultParity({ snapshotText, requestJira, idMappingCsv,
   const names = { ...DEFAULT_ENTITY_TYPES, ...types };
   const ids = idMappingCsv ? parseIdMapping(idMappingCsv) : undefined;
   const mapIssue = ids ? (id) => ids.get(names.issue, id) : undefined;
-  const { reports } = analyse(source, await readCloudWorld(requestJira), options);
+  const { reports } = analyse(source, await loadCloud(requestJira, source), options);
   const resultsOf = new Map(source.filters.map((f) => [f.jql, f.results]));
   const out = [];
   for (const r of reports) {

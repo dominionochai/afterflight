@@ -1,3 +1,5 @@
+import { mapLimit } from './concurrency.js';
+
 /**
  * Forge's api.asUser().requestJira, with the route already trusted. Payloads are Atlassian JSON;
  * the readers below pick only the fields they need.
@@ -35,41 +37,41 @@ async function userPages(requestJira) {
 
 const nameOnly = ({ id, name }) => ({ id: String(id), name });
 
+export const ALL_ENTITY_TYPES = ['project', 'status', 'issuetype', 'priority', 'field', 'user', 'version', 'component'];
+
+const LISTS = {
+  status: (r) => getJson(r, '/rest/api/3/status').then((rows) => rows.map(nameOnly)),
+  issuetype: (r) => getJson(r, '/rest/api/3/issuetype').then((rows) => rows.map(nameOnly)),
+  priority: (r) => boundedPages(r, '/rest/api/3/priority/search').then((rows) => rows.map(nameOnly)),
+  field: (r) => getJson(r, '/rest/api/3/field').then((rows) => rows.map(nameOnly)),
+  user: async (r) => (await userPages(r)).filter((u) => u.accountType === 'atlassian').map((u) => ({ id: u.accountId, name: u.displayName, email: u.emailAddress })),
+};
+
 /**
- * @param {RequestJira} requestJira
+ * Reads only the entity types a run needs (a big site has many users and projects), at most three lists at a time.
+ * Filters are always read. Versions and components cost two requests per project, so they are read only when asked for.
+ * @param {RequestJira} requestJira @param {string[]} [wanted]
  * @returns {Promise<import('./engine.js').World>}
  */
-export async function readCloudWorld(requestJira) {
-  const [projects, statuses, issuetypes, priorities, fields, users, filters] = await Promise.all([
-    boundedPages(requestJira, '/rest/api/3/project/search'),
-    getJson(requestJira, '/rest/api/3/status'),
-    getJson(requestJira, '/rest/api/3/issuetype'),
-    boundedPages(requestJira, '/rest/api/3/priority/search'),
-    getJson(requestJira, '/rest/api/3/field'),
-    userPages(requestJira),
-    boundedPages(requestJira, '/rest/api/3/filter/search?expand=jql,owner'),
-  ]);
-  const perProject = (suffix) => Promise.all(projects.map((p) => getJson(requestJira, `/rest/api/3/project/${p.id}/${suffix}`)));
-  const [versions, components] = await Promise.all([perProject('versions'), perProject('components')]);
+export async function readCloudWorld(requestJira, wanted = ALL_ENTITY_TYPES) {
+  const want = new Set(wanted);
+  const entities = {};
+  await mapLimit(Object.keys(LISTS).filter((t) => want.has(t)), 3, async (type) => {
+    entities[type] = await LISTS[type](requestJira);
+  });
+  if (want.has('project') || want.has('version') || want.has('component')) {
+    const projects = await boundedPages(requestJira, '/rest/api/3/project/search');
+    if (want.has('project')) entities.project = projects.map((p) => ({ ...nameOnly(p), key: p.key }));
+    for (const [type, suffix] of [['version', 'versions'], ['component', 'components']]) {
+      if (want.has(type)) {
+        entities[type] = (await mapLimit(projects, 5, (p) => getJson(requestJira, `/rest/api/3/project/${p.id}/${suffix}`))).flat().map(nameOnly);
+      }
+    }
+  }
+  const filters = await boundedPages(requestJira, '/rest/api/3/filter/search?expand=jql,owner');
   return {
-    entities: {
-      project: projects.map((p) => ({ ...nameOnly(p), key: p.key })),
-      status: statuses.map(nameOnly),
-      issuetype: issuetypes.map(nameOnly),
-      priority: priorities.map(nameOnly),
-      field: fields.map(nameOnly),
-      user: users
-        .filter((u) => u.accountType === 'atlassian')
-        .map((u) => ({ id: u.accountId, name: u.displayName, email: u.emailAddress })),
-      version: versions.flat().map(nameOnly),
-      component: components.flat().map(nameOnly),
-    },
-    filters: filters.map((f) => ({
-      id: String(f.id),
-      name: f.name,
-      ownerEmail: f.owner?.emailAddress ?? '',
-      jql: f.jql,
-    })),
+    entities,
+    filters: filters.map((f) => ({ id: String(f.id), name: f.name, ownerEmail: f.owner?.emailAddress ?? '', jql: f.jql })),
   };
 }
 
