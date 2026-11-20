@@ -7,6 +7,7 @@ export const CHECKED = [
   'Boards: filter reference, column-to-status mapping, estimation field, and the set of issues each board shows',
 ];
 export const CHECKED_WITH_GAPS = [
+  'JQL: was, changed and by clauses are read. Functions that take arguments (for example membersOf or app functions that embed JQL) and unterminated strings are listed per filter as not analysed, and nothing inside them is repaired',
   'Saved filters: versions and components are not exported from Data Center yet, so references to them are not judged',
   'Board quick filters and Kanban sub-queries: read on Cloud and run through Atlassian\'s parser (references that no longer resolve only; not compared with Data Center, and fixes are manual because no write route was found)',
   'Advanced Roadmaps: Cloud plans that use a filter are listed beside it (Jira Premium only); plan contents are not compared with Data Center',
@@ -33,6 +34,8 @@ export function buildIntegrityReport({ generatedAt, analysis, boards = [], audit
     if (b.sourceTruncated) caveats.push(`Board "${b.name}": the Data Center export was truncated, so issues reported missing may be false alarms.`);
     if (b.issues && !b.issues.complete) caveats.push(`Board "${b.name}": some source issues have no ID mapping, so its unexpected-issue list is not reliable.`);
   }
+  const partial = analysis.filters.filter((f) => f.notAnalysed?.length);
+  if (partial.length) caveats.push(`${partial.length} filter(s) contain query parts that are not analysed, so references inside them were neither checked nor repaired: ${partial.map((f) => f.name).join(', ')}.`);
   if (analysis.checkNote) caveats.push(analysis.checkNote);
   for (const a of analysis.ambiguousPairs ?? []) caveats.push(`Filter "${a.name}" (${a.id}) was not analysed: ${a.reason}.`);
   if (analysis.plansNote) caveats.push(analysis.plansNote);
@@ -49,6 +52,7 @@ export function buildIntegrityReport({ generatedAt, analysis, boards = [], audit
         needAttention: count(analysis.filters, (f) => f.open.length > 0),
         notMigrated: analysis.notMigrated.length,
         unpaired: (analysis.ambiguousPairs ?? []).length,
+        partlyAnalysed: partial.length,
       },
       boards: {
         total: boards.length,
@@ -92,7 +96,7 @@ export function renderMarkdown(r) {
     '# Afterflight migration integrity report',
     `Generated ${r.generatedAt}`,
     '## Summary',
-    `- Filters: ${f.total} analysed, ${f.repairable} repairable, ${f.needAttention} need attention, ${f.notMigrated} not migrated, ${f.unpaired} could not be paired without guessing`,
+    `- Filters: ${f.total} analysed, ${f.repairable} repairable, ${f.needAttention} need attention, ${f.notMigrated} not migrated, ${f.unpaired} could not be paired without guessing, ${f.partlyAnalysed} partly analysed`,
     `- Boards: ${b.total} listed, ${b.compared} compared, ${b.withConfigFindings} with config findings, ${b.withMissingIssues} with missing issues`,
     `- Filter results: ${r.summary.results.compared} compared, ${r.summary.results.matchAsMigrated} match as migrated, ${r.summary.results.matchAfterRepair} match after repair`,
     `- Board quick filters and sub-queries: ${r.summary.boardQueries.checked} checked, ${r.summary.boardQueries.withProblems} with problems`,

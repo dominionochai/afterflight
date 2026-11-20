@@ -22,3 +22,10 @@ export function explain(f) {
       return undefined;
   }
 }
+
+/** A sentence for a query part that is not analysed. @param {string} construct */
+export function explainUnanalysed(construct) {
+  return construct.startsWith('an unterminated')
+    ? 'The query has an unterminated quoted string, so its references may be misread and none were repaired. Check it by hand.'
+    : `The query uses ${construct}, which Afterflight does not analyse, so references inside it were not checked or repaired. Check it by hand.`;
+}

@@ -9,7 +9,7 @@ import { appliedRepairs } from './audit.js';
 import { mapLimit } from './concurrency.js';
 import { extractReferences } from './jql.js';
 import { compareChecks, parseJql } from './jql-check.js';
-import { explain } from './explain.js';
+import { explain, explainUnanalysed } from './explain.js';
 import { DEFAULT_ENTITY_TYPES } from './entity-types.js';
 import { randomUUID } from 'node:crypto';
 
@@ -93,7 +93,8 @@ export async function runAnalysis({ snapshotText, requestJira, idMappingCsv, typ
       proposed: r.proposed,
       canRepair: needsRepair(r),
       check: checks?.get(r.filterId),
-      why: r.findings.map(explain).filter(Boolean),
+      why: [...r.findings.map(explain).filter(Boolean), ...r.notAnalysed.map(explainUnanalysed)],
+      notAnalysed: r.notAnalysed,
       boards: (usage?.get(r.filterId) ?? []).map(({ id, name }) => ({ id, name })),
       plans: (plans ?? [])
         .filter((p) => p.issueSources.some((s) => s.type === 'Filter' && s.value === r.filterId))

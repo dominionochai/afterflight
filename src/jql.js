@@ -10,7 +10,8 @@ const ENTITY_FIELDS = {
 
 const TOKEN = /(cf\[\d+\])|"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|(!=|!~|<=|>=|[=<>~])|([(),])|([^\s=!<>~(),"']+)/g;
 
-const KEYWORDS = new Set(['and', 'or', 'not', 'is', 'in', 'by', 'order', 'was', 'changed']);
+const KEYWORDS = new Set(['and', 'or', 'not', 'is', 'in', 'by', 'order', 'was', 'changed', 'from', 'to', 'after', 'before', 'on', 'during']);
+const word = (token) => (token?.kind === 'word' ? token.text.toLowerCase() : '');
 
 const isPunct = (token, char) => token?.kind === 'punct' && token.text === char;
 
@@ -45,6 +46,7 @@ function skipCall(tokens, open) {
   return tokens.length;
 }
 
+/** The value tokens at `at` (one value or a parenthesised list, functions skipped) and the index just past them. */
 function valueTokens(tokens, at) {
   const isList = isPunct(tokens[at], '(');
   const out = [];
@@ -57,7 +59,39 @@ function valueTokens(tokens, at) {
     }
     if (!isList) break;
   }
-  return out;
+  return { tokens: out, end: isList && isPunct(tokens[i], ')') ? i + 1 : i };
+}
+
+/** A date or function value of a history predicate (after, before, on, during) is skipped, not read as an entity. */
+function skipValue(tokens, at) {
+  if (isPunct(tokens[at], '(')) return skipCall(tokens, at);
+  return isPunct(tokens[at + 1], '(') ? skipCall(tokens, at + 1) : at + 1;
+}
+
+/**
+ * Entity values of `field was [not] [in] x [by u]` and `field changed [from x] [to y] [by u]`. The by-clause names
+ * users whatever the field is; from, to and was values are of the field's own type.
+ */
+function historyRefs(tokens, i, type) {
+  const refs = [];
+  const take = (at, refType) => {
+    const { tokens: values, end } = valueTokens(tokens, at);
+    if (refType) values.forEach((token) => refs.push({ type: refType, token }));
+    return end;
+  };
+  let j = i + 2;
+  if (word(tokens[i + 1]) === 'was') {
+    if (word(tokens[j]) === 'not') j++;
+    if (word(tokens[j]) === 'in') j++;
+    j = take(j, type);
+  }
+  for (;;) {
+    const w = word(tokens[j]);
+    if (w === 'from' || w === 'to') j = take(j + 1, type);
+    else if (w === 'by') j = take(j + 1, 'user');
+    else if (w === 'after' || w === 'before' || w === 'on' || w === 'during') j = skipValue(tokens, j + 1);
+    else return refs;
+  }
 }
 
 /**
@@ -72,13 +106,36 @@ export function extractReferences(jql) {
   tokens.forEach((field, i) => {
     if (field.kind === 'op' || field.kind === 'punct') return;
     if (field.kind === 'word' && KEYWORDS.has(field.text.toLowerCase())) return;
-    const valuesAt = afterOperator(tokens, i + 1);
-    if (valuesAt < 0) return;
+    const history = word(tokens[i + 1]) === 'was' || word(tokens[i + 1]) === 'changed';
+    const valuesAt = history ? -1 : afterOperator(tokens, i + 1);
+    if (!history && valuesAt < 0) return;
     const type = field.kind === 'cf' ? undefined : ENTITY_FIELDS[field.text.toLowerCase()];
     if (!type) refs.push({ type: 'field', literal: field.text, start: field.start, end: field.end });
-    else for (const v of valueTokens(tokens, valuesAt)) refs.push({ type, literal: v.text, start: v.start, end: v.end });
+    const values = history
+      ? historyRefs(tokens, i, type)
+      : type ? valueTokens(tokens, valuesAt).tokens.map((token) => ({ type, token })) : [];
+    for (const { type: valueType, token } of values) refs.push({ type: valueType, literal: token.text, start: token.start, end: token.end });
   });
   return refs;
+}
+
+const DATE_FUNCTIONS = /^(now|currentlogin|lastlogin|(startof|endof)(day|week|month|year))$/i;
+const QUOTES_BALANCED = /^(?:[^"\\]|\\.|"(?:[^"\\]|\\.)*")*$/s;
+
+/**
+ * Parts of a query whose references are not read, so they can neither be checked nor repaired: functions that take
+ * arguments (group functions, version functions, app functions that embed JQL) and an unterminated quoted string.
+ * @param {string} jql @returns {string[]}
+ */
+export function unsupportedConstructs(jql) {
+  const tokens = tokenize(jql);
+  const found = QUOTES_BALANCED.test(jql) ? [] : ['an unterminated quoted string'];
+  tokens.forEach((t, i) => {
+    if (t.kind !== 'word' || KEYWORDS.has(t.text.toLowerCase()) || !isPunct(tokens[i + 1], '(')) return;
+    const end = skipCall(tokens, i + 1);
+    if (end - i > 3 && !DATE_FUNCTIONS.test(t.text)) found.push(jql.slice(t.start, tokens[end - 1].end));
+  });
+  return [...new Set(found)];
 }
 
 /** @param {string} jql @param {{ start: number, end: number, text: string }[]} edits */

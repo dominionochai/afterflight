@@ -1,4 +1,4 @@
-import { extractReferences, rewrite } from './jql.js';
+import { extractReferences, rewrite, unsupportedConstructs } from './jql.js';
 
 /** @typedef {import('./jql.js').EntityType} EntityType */
 /** @typedef {{ id: string, name: string, key?: string, email?: string }} Entity */
@@ -7,7 +7,7 @@ import { extractReferences, rewrite } from './jql.js';
 /** @typedef {{ entities: Partial<Record<EntityType, Entity[]>>, filters: SavedFilter[], boards?: SourceBoard[] }} World */
 /** @typedef {'ok'|'stale'|'wrong-entity'|'missing'|'ambiguous'|'unknown-in-source'|'structure-changed'} Status */
 /** @typedef {{ type?: EntityType, was: string, now: string, status: Status, meant?: string, resolvesNowTo?: string, targetName?: string, mappedCloudId?: string, fix?: { start: number, end: number, text: string } }} Finding */
-/** @typedef {{ filterId: string, name: string, sourceJql: string, original: string, proposed: string, findings: Finding[] }} FilterReport */
+/** @typedef {{ filterId: string, name: string, sourceJql: string, original: string, proposed: string, findings: Finding[], notAnalysed: string[] }} FilterReport */
 
 const OPEN_STATUSES = new Set(['missing', 'ambiguous', 'structure-changed']);
 const STALE_STATUSES = new Set(['stale', 'wrong-entity']);
@@ -118,7 +118,7 @@ export function analyse(source, cloud, { pairById, mapId } = {}) {
     }
     claimed.add(dst.id);
     const { findings, proposed } = diagnoseQuery(src.jql, dst.jql, source, cloud, mapId);
-    reports.push({ filterId: dst.id, name: dst.name, sourceJql: src.jql, original: dst.jql, proposed, findings });
+    reports.push({ filterId: dst.id, name: dst.name, sourceJql: src.jql, original: dst.jql, proposed, findings, notAnalysed: unsupportedConstructs(src.jql) });
   }
   return { reports, notMigrated, ambiguousPairs };
 }
